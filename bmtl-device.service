@@ -1,0 +1,26 @@
+[Unit]
+Description=BMTL Device MQTT Client Daemon
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/bmtl-device
+Environment=PATH=/opt/bmtl-device/venv/bin
+ExecStart=/opt/bmtl-device/venv/bin/python /opt/bmtl-device/mqtt_daemon.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/bmtl-device /etc/bmtl-device
+
+[Install]
+WantedBy=multi-user.target
