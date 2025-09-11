@@ -57,13 +57,17 @@ fi
 
 # Install systemd service
 echo "🔧 Installing systemd service..."
-sudo cp bmtl-device.service /etc/systemd/system/
+# Create a temporary service file with current user
+cp bmtl-device.service bmtl-device.service.tmp
+sed -i "s/User=pi/User=$USER/g" bmtl-device.service.tmp
+sed -i "s/Group=pi/Group=$(id -gn)/g" bmtl-device.service.tmp
+sudo cp bmtl-device.service.tmp /etc/systemd/system/bmtl-device.service
+rm bmtl-device.service.tmp
 sudo systemctl daemon-reload
 sudo systemctl enable bmtl-device
 
-# Create log directory
-sudo mkdir -p /var/log/bmtl-device
-sudo chown $USER:$USER /var/log/bmtl-device
+# Remove old log directory references (logs are now in app directory)
+# Create log directory is handled by the application itself
 
 echo "✅ Installation completed successfully!"
 echo ""
