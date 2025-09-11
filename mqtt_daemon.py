@@ -8,6 +8,7 @@ import signal
 import logging
 import configparser
 import os
+import ssl
 from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
@@ -67,6 +68,7 @@ class BMTLMQTTDaemon:
             self.mqtt_port = int(os.getenv('MQTT_PORT', self.config.getint('mqtt', 'port', fallback=1883)))
             self.mqtt_username = os.getenv('MQTT_USERNAME', self.config.get('mqtt', 'username', fallback=''))
             self.mqtt_password = os.getenv('MQTT_PASSWORD', self.config.get('mqtt', 'password', fallback=''))
+            self.mqtt_use_tls = os.getenv('MQTT_USE_TLS', self.config.get('mqtt', 'use_tls', fallback='false')).lower() == 'true'
             self.mqtt_client_id = self.config.get('mqtt', 'client_id', fallback='bmtl-device')
             
             # Device Configuration
@@ -115,7 +117,19 @@ class BMTLMQTTDaemon:
             self.logger.error(f"Failed to connect to MQTT broker with result code {rc}")
             
     def on_disconnect(self, client, userdata, rc):
-        self.logger.warning(f"Disconnected from MQTT broker with result code {rc}")
+        disconnect_reasons = {
+            0: "Connection successful",
+            1: "Connection refused - incorrect protocol version", 
+            2: "Connection refused - invalid client identifier",
+            3: "Connection refused - server unavailable",
+            4: "Connection refused - bad username or password",
+            5: "Connection refused - not authorised",
+            6: "Connection refused - reserved for future use",
+            7: "Connection refused - not authorised",
+            8: "Connection refused - reserved for future use"
+        }
+        reason = disconnect_reasons.get(rc, f"Unknown disconnect reason ({rc})")
+        self.logger.warning(f"Disconnected from MQTT broker: {reason}")
         
     def on_message(self, client, userdata, msg):
         try:
@@ -207,6 +221,12 @@ class BMTLMQTTDaemon:
         # Set username and password if provided
         if self.mqtt_username and self.mqtt_password:
             self.client.username_pw_set(self.mqtt_username, self.mqtt_password)
+        
+        # Enable TLS if configured
+        if self.mqtt_use_tls:
+            self.client.tls_set(ca_certs=None, certfile=None, keyfile=None, 
+                              cert_reqs=ssl.CERT_REQUIRED, tls_version=ssl.PROTOCOL_TLS, 
+                              ciphers=None)
             
         # Set callbacks
         self.client.on_connect = self.on_connect
