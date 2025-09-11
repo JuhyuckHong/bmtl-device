@@ -18,9 +18,9 @@ StandardError=journal
 # Security settings
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectSystem=strict
+ProtectSystem=false
 ProtectHome=yes
-ReadWritePaths=/var/log/bmtl-device /etc/bmtl-device
+ReadWritePaths=/opt/bmtl-device /etc/bmtl-device
 
 [Install]
 WantedBy=multi-user.target

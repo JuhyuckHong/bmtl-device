@@ -43,7 +43,7 @@ source venv/bin/activate
 
 # Install Python dependencies
 echo "📦 Installing Python dependencies..."
-pip install paho-mqtt configparser
+pip install paho-mqtt configparser python-dotenv
 
 # Create config directory
 sudo mkdir -p /etc/bmtl-device

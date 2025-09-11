@@ -7,6 +7,8 @@ import time
 import signal
 import logging
 import configparser
+import os
+from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
 import paho.mqtt.client as mqtt
@@ -14,7 +16,7 @@ import paho.mqtt.client as mqtt
 class BMTLMQTTDaemon:
     def __init__(self):
         self.config_path = "/etc/bmtl-device/config.ini"
-        self.log_dir = "/var/log/bmtl-device"
+        self.log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
         self.client = None
         self.running = True
         
@@ -47,6 +49,10 @@ class BMTLMQTTDaemon:
         self.message_logger.propagate = False
         
     def load_config(self):
+        # Load .env file first
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+        load_dotenv(env_path)
+        
         self.config = configparser.ConfigParser()
         
         if not os.path.exists(self.config_path):
@@ -56,11 +62,11 @@ class BMTLMQTTDaemon:
         try:
             self.config.read(self.config_path)
             
-            # MQTT Configuration
-            self.mqtt_host = self.config.get('mqtt', 'host', fallback='localhost')
-            self.mqtt_port = self.config.getint('mqtt', 'port', fallback=1883)
-            self.mqtt_username = self.config.get('mqtt', 'username', fallback='')
-            self.mqtt_password = self.config.get('mqtt', 'password', fallback='')
+            # MQTT Configuration - prioritize environment variables
+            self.mqtt_host = os.getenv('MQTT_HOST', self.config.get('mqtt', 'host', fallback='localhost'))
+            self.mqtt_port = int(os.getenv('MQTT_PORT', self.config.getint('mqtt', 'port', fallback=1883)))
+            self.mqtt_username = os.getenv('MQTT_USERNAME', self.config.get('mqtt', 'username', fallback=''))
+            self.mqtt_password = os.getenv('MQTT_PASSWORD', self.config.get('mqtt', 'password', fallback=''))
             self.mqtt_client_id = self.config.get('mqtt', 'client_id', fallback='bmtl-device')
             
             # Device Configuration
