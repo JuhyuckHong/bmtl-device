@@ -93,18 +93,28 @@ rm bmtl-device.service.tmp
 sudo systemctl daemon-reload
 sudo systemctl enable bmtl-device
 
-# Remove old log directory references (logs are now in app directory)
-# Create log directory is handled by the application itself
+# Start the service
+echo "🚀 Starting bmtl-device service..."
+sudo systemctl start bmtl-device
 
-echo "✅ Installation completed successfully!"
-echo ""
-echo "🚀 To start the service:"
-echo "   sudo systemctl start bmtl-device"
-echo ""
-echo "📊 To check service status:"
-echo "   sudo systemctl status bmtl-device"
-echo ""
-echo "📝 To view logs:"
-echo "   sudo journalctl -u bmtl-device -f"
-echo ""
-echo "⚙️  Configuration file: /etc/bmtl-device/config.ini"
+# Wait a moment for service to start
+sleep 2
+
+# Check service status
+echo "📊 Checking service status..."
+if systemctl is-active --quiet bmtl-device; then
+    echo "✅ Installation completed successfully! Service is running."
+    echo ""
+    echo "📝 To view logs:"
+    echo "   sudo journalctl -u bmtl-device -f"
+    echo ""
+    echo "📝 To view application logs:"
+    echo "   tail -f $APP_DIR/logs/mqtt_daemon.log"
+    echo ""
+    echo "⚙️  Configuration file: /etc/bmtl-device/config.ini"
+    echo "⚙️  Environment file: $APP_DIR/.env"
+else
+    echo "⚠️  Service installed but failed to start. Check status with:"
+    echo "   sudo systemctl status bmtl-device"
+    echo "   sudo journalctl -u bmtl-device -f"
+fi
