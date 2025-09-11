@@ -7,6 +7,18 @@ set -e
 
 echo "🔧 Installing BMTL Device MQTT Client Daemon..."
 
+# Check if service is already running and stop it
+if systemctl is-active --quiet bmtl-device; then
+    echo "🛑 Stopping existing bmtl-device service..."
+    sudo systemctl stop bmtl-device
+fi
+
+# Disable existing service if it exists
+if systemctl is-enabled --quiet bmtl-device 2>/dev/null; then
+    echo "🔄 Disabling existing bmtl-device service..."
+    sudo systemctl disable bmtl-device
+fi
+
 # Check if running on Raspberry Pi
 if ! grep -q "Raspberry Pi\|BCM" /proc/cpuinfo; then
     echo "⚠️  Warning: This script is designed for Raspberry Pi"
@@ -31,14 +43,29 @@ echo "📁 Creating application directory: $APP_DIR"
 sudo mkdir -p $APP_DIR
 sudo chown $USER:$USER $APP_DIR
 
-# Copy application files
-echo "📋 Copying application files..."
-cp -r . $APP_DIR/
+# Check if this is an update (app directory already exists with files)
+if [ -d "$APP_DIR/venv" ] && [ -f "$APP_DIR/mqtt_daemon.py" ]; then
+    echo "🔄 Updating existing installation..."
+    # Copy updated files
+    cp -f *.py $APP_DIR/ 2>/dev/null || true
+    cp -f *.service $APP_DIR/ 2>/dev/null || true
+    cp -f *.ini $APP_DIR/ 2>/dev/null || true
+    cp -f *.sh $APP_DIR/ 2>/dev/null || true
+    cp -f .env.example $APP_DIR/ 2>/dev/null || true
+else
+    echo "📋 Installing fresh copy..."
+    # Copy all application files
+    cp -r . $APP_DIR/
+fi
 cd $APP_DIR
 
-# Create Python virtual environment
-echo "🐍 Setting up Python virtual environment..."
-python3 -m venv venv
+# Create Python virtual environment (if not exists) or reuse existing
+if [ ! -d "venv" ]; then
+    echo "🐍 Creating Python virtual environment..."
+    python3 -m venv venv
+else
+    echo "🐍 Using existing Python virtual environment..."
+fi
 source venv/bin/activate
 
 # Install Python dependencies
