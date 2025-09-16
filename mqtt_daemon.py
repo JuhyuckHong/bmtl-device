@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
 import paho.mqtt.client as mqtt
+from shared_config import write_camera_config, write_camera_command, write_camera_schedule, read_camera_config
 
 class BMTLMQTTDaemon:
     def __init__(self):
@@ -79,6 +80,7 @@ class BMTLMQTTDaemon:
             self.status_topic = self.config.get('topics', 'status', fallback='bmtl/device/status')
             self.heartbeat_topic = self.config.get('topics', 'heartbeat', fallback='bmtl/device/heartbeat')
             self.command_topic = self.config.get('topics', 'command', fallback='bmtl/device/command')
+            self.camera_topic = self.config.get('topics', 'camera', fallback='bmtl/device/camera')
             self.subscribe_topics = self.config.get('topics', 'subscribe', fallback='#')
             
             # Subscription Configuration
@@ -102,6 +104,10 @@ class BMTLMQTTDaemon:
             # Subscribe to command topic
             client.subscribe(f"{self.command_topic}/{self.device_id}")
             self.logger.info(f"Subscribed to {self.command_topic}/{self.device_id}")
+
+            # Subscribe to camera topic
+            client.subscribe(f"{self.camera_topic}/{self.device_id}")
+            self.logger.info(f"Subscribed to {self.camera_topic}/{self.device_id}")
             
             # Subscribe to all topics if enabled
             if self.enable_all_topics:
@@ -156,6 +162,14 @@ class BMTLMQTTDaemon:
                     self.handle_command(command)
                 except json.JSONDecodeError:
                     self.logger.error(f"Invalid JSON in command: {payload}")
+
+            # Handle camera messages
+            elif topic.startswith(self.camera_topic):
+                try:
+                    camera_command = json.loads(payload)
+                    self.handle_camera_command(camera_command)
+                except json.JSONDecodeError:
+                    self.logger.error(f"Invalid JSON in camera command: {payload}")
                 
         except Exception as e:
             self.logger.error(f"Error handling message: {e}")
@@ -175,6 +189,48 @@ class BMTLMQTTDaemon:
             self.running = False
         else:
             self.logger.warning(f"Unknown command type: {cmd_type}")
+
+    def handle_camera_command(self, command):
+        """Handle camera-specific commands by writing to config files"""
+        try:
+            cmd_type = command.get('type', '')
+
+            if cmd_type == 'config':
+                # Camera configuration update
+                config = command.get('config', {})
+                write_camera_config(config)
+                self.logger.info(f"Camera config updated: {config}")
+
+            elif cmd_type == 'capture':
+                # Immediate capture command
+                capture_command = {
+                    'type': 'capture',
+                    'filename': command.get('filename'),
+                    'timestamp': datetime.now().isoformat()
+                }
+                write_camera_command(capture_command)
+                self.logger.info(f"Camera capture command sent: {capture_command}")
+
+            elif cmd_type == 'schedule':
+                # Camera schedule update
+                schedule = command.get('schedule', {})
+                write_camera_schedule(schedule)
+                self.logger.info(f"Camera schedule updated: {schedule}")
+
+            elif cmd_type == 'status':
+                # Request camera status
+                status_command = {
+                    'type': 'status',
+                    'timestamp': datetime.now().isoformat()
+                }
+                write_camera_command(status_command)
+                self.logger.info("Camera status requested")
+
+            else:
+                self.logger.warning(f"Unknown camera command type: {cmd_type}")
+
+        except Exception as e:
+            self.logger.error(f"Error handling camera command: {e}")
             
     def send_status(self, status):
         try:

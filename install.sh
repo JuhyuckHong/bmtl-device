@@ -7,16 +7,26 @@ set -e
 
 echo "🔧 Installing BMTL Device MQTT Client Daemon..."
 
-# Check if service is already running and stop it
+# Check if services are already running and stop them
 if systemctl is-active --quiet bmtl-device; then
     echo "🛑 Stopping existing bmtl-device service..."
     sudo systemctl stop bmtl-device
 fi
 
-# Disable existing service if it exists
+if systemctl is-active --quiet bmtl-camera; then
+    echo "🛑 Stopping existing bmtl-camera service..."
+    sudo systemctl stop bmtl-camera
+fi
+
+# Disable existing services if they exist
 if systemctl is-enabled --quiet bmtl-device 2>/dev/null; then
     echo "🔄 Disabling existing bmtl-device service..."
     sudo systemctl disable bmtl-device
+fi
+
+if systemctl is-enabled --quiet bmtl-camera 2>/dev/null; then
+    echo "🔄 Disabling existing bmtl-camera service..."
+    sudo systemctl disable bmtl-camera
 fi
 
 # Check if running on Raspberry Pi
@@ -35,7 +45,7 @@ sudo apt update && sudo apt upgrade -y
 
 # Install required packages
 echo "📦 Installing dependencies..."
-sudo apt install -y python3 python3-pip python3-venv git
+sudo apt install -y python3 python3-pip python3-venv git gphoto2 libgphoto2-dev python3-rpi.gpio
 
 # Create application directory
 APP_DIR="/opt/bmtl-device"
@@ -70,7 +80,7 @@ source venv/bin/activate
 
 # Install Python dependencies
 echo "📦 Installing Python dependencies..."
-pip install paho-mqtt configparser python-dotenv
+pip install paho-mqtt configparser python-dotenv inotify-simple
 
 # Create config directory
 sudo mkdir -p /etc/bmtl-device
@@ -82,39 +92,61 @@ if [ ! -f /etc/bmtl-device/config.ini ]; then
     echo "📝 Please edit /etc/bmtl-device/config.ini to configure your MQTT settings"
 fi
 
-# Install systemd service
-echo "🔧 Installing systemd service..."
-# Create a temporary service file with current user
+# Install systemd services
+echo "🔧 Installing systemd services..."
+
+# Install MQTT daemon service
 cp bmtl-device.service bmtl-device.service.tmp
 sed -i "s/User=pi/User=$USER/g" bmtl-device.service.tmp
 sed -i "s/Group=pi/Group=$(id -gn)/g" bmtl-device.service.tmp
 sudo cp bmtl-device.service.tmp /etc/systemd/system/bmtl-device.service
 rm bmtl-device.service.tmp
+
+# Install Camera daemon service
+cp bmtl-camera.service bmtl-camera.service.tmp
+sed -i "s/User=pi/User=$USER/g" bmtl-camera.service.tmp
+sed -i "s/Group=pi/Group=$(id -gn)/g" bmtl-camera.service.tmp
+sudo cp bmtl-camera.service.tmp /etc/systemd/system/bmtl-camera.service
+rm bmtl-camera.service.tmp
+
 sudo systemctl daemon-reload
 sudo systemctl enable bmtl-device
+sudo systemctl enable bmtl-camera
 
-# Start the service
-echo "🚀 Starting bmtl-device service..."
+# Start the services
+echo "🚀 Starting bmtl services..."
 sudo systemctl start bmtl-device
+sudo systemctl start bmtl-camera
 
-# Wait a moment for service to start
-sleep 2
+# Wait a moment for services to start
+sleep 3
 
 # Check service status
 echo "📊 Checking service status..."
-if systemctl is-active --quiet bmtl-device; then
-    echo "✅ Installation completed successfully! Service is running."
+MQTT_STATUS=$(systemctl is-active bmtl-device 2>/dev/null || echo "inactive")
+CAMERA_STATUS=$(systemctl is-active bmtl-camera 2>/dev/null || echo "inactive")
+
+echo "MQTT Daemon: $MQTT_STATUS"
+echo "Camera Daemon: $CAMERA_STATUS"
+
+if [[ "$MQTT_STATUS" == "active" && "$CAMERA_STATUS" == "active" ]]; then
+    echo "✅ Installation completed successfully! Both services are running."
     echo ""
     echo "📝 To view logs:"
-    echo "   sudo journalctl -u bmtl-device -f"
+    echo "   sudo journalctl -u bmtl-device -f    # MQTT daemon"
+    echo "   sudo journalctl -u bmtl-camera -f    # Camera daemon"
     echo ""
     echo "📝 To view application logs:"
     echo "   tail -f $APP_DIR/logs/mqtt_daemon.log"
+    echo "   tail -f $APP_DIR/logs/camera_daemon.log"
     echo ""
     echo "⚙️  Configuration file: /etc/bmtl-device/config.ini"
     echo "⚙️  Environment file: $APP_DIR/.env"
+    echo "📂 Camera config directory: /tmp/bmtl-config"
 else
-    echo "⚠️  Service installed but failed to start. Check status with:"
+    echo "⚠️  Some services failed to start. Check status with:"
     echo "   sudo systemctl status bmtl-device"
+    echo "   sudo systemctl status bmtl-camera"
     echo "   sudo journalctl -u bmtl-device -f"
+    echo "   sudo journalctl -u bmtl-camera -f"
 fi
