@@ -95,12 +95,16 @@ class BMTLMQTTDaemon:
             hostname_device_id = self.extract_device_id_from_hostname()
             config_device_id = self.config.get('device', 'id', fallback=None)
 
-            # Use hostname-derived ID if it looks like a number, otherwise use config
-            if hostname_device_id != "01" or not config_device_id:
+            # Always use hostname-derived ID if extraction was successful
+            # (hostname extraction returns "01" as default if no match found)
+            hostname = socket.gethostname()
+            if 'bmotion' in hostname.lower():
+                # Hostname contains bmotion pattern, use extracted ID
                 self.device_id = hostname_device_id
                 self.logger.info(f"Using device ID from hostname: {self.device_id}")
             else:
-                self.device_id = config_device_id
+                # Fallback to config if hostname doesn't match pattern
+                self.device_id = config_device_id or hostname_device_id
                 self.logger.info(f"Using device ID from config: {self.device_id}")
 
             self.device_location = self.config.get('device', 'location', fallback='unknown')
