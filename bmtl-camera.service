@@ -10,9 +10,7 @@ Group=pi
 WorkingDirectory=/opt/bmtl-device
 Environment=PYTHONPATH=/opt/bmtl-device
 ExecStartPre=/bin/mkdir -p /tmp/bmtl-config
-ExecStartPre=/bin/mount -t tmpfs -o size=10M tmpfs /tmp/bmtl-config
 ExecStart=/opt/bmtl-device/venv/bin/python /opt/bmtl-device/camera_daemon.py
-ExecStopPost=/bin/umount /tmp/bmtl-config
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -20,7 +18,6 @@ StandardError=journal
 
 # Security settings
 NoNewPrivileges=true
-PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/opt/bmtl-device /tmp/bmtl-config
