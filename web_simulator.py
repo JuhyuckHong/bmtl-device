@@ -331,7 +331,16 @@ health_thread.start()
 # Flask 라우트들
 @app.route('/')
 def index():
-    return render_template('simulator.html', state=simulator_state)
+    # 환경 변수를 템플릿에 직접 전달
+    template_data = {
+        'state': simulator_state,
+        'env_mqtt_host': os.getenv('MQTT_HOST', ''),
+        'env_mqtt_port': os.getenv('MQTT_PORT', ''),
+        'env_mqtt_username': os.getenv('MQTT_USERNAME', ''),
+        'env_mqtt_password': os.getenv('MQTT_PASSWORD', ''),
+        'env_mqtt_use_tls': os.getenv('MQTT_USE_TLS', 'false')
+    }
+    return render_template('simulator.html', **template_data)
 
 @app.route('/api/connect', methods=['POST'])
 def connect_mqtt():

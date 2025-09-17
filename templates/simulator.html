@@ -159,19 +159,19 @@
                     <h4>MQTT 설정</h4>
                     <div style="margin-bottom: 10px;">
                         <label>Host:</label>
-                        <input type="text" id="mqtt-host" placeholder="localhost" style="width: 150px;">
+                        <input type="text" id="mqtt-host" placeholder="localhost" value="{{ env_mqtt_host }}" style="width: 150px;">
                     </div>
                     <div style="margin-bottom: 10px;">
                         <label>Port:</label>
-                        <input type="number" id="mqtt-port" placeholder="1883" style="width: 80px;">
+                        <input type="number" id="mqtt-port" placeholder="1883" value="{{ env_mqtt_port }}" style="width: 80px;">
                     </div>
                     <div style="margin-bottom: 10px;">
                         <label>Username:</label>
-                        <input type="text" id="mqtt-username" placeholder="optional" style="width: 120px;">
+                        <input type="text" id="mqtt-username" placeholder="optional" value="{{ env_mqtt_username }}" style="width: 120px;">
                     </div>
                     <div style="margin-bottom: 10px;">
                         <label>Password:</label>
-                        <input type="password" id="mqtt-password" placeholder="optional" style="width: 120px;">
+                        <input type="password" id="mqtt-password" placeholder="optional" value="{{ env_mqtt_password }}" style="width: 120px;">
                     </div>
                     <button class="btn btn-warning" onclick="updateMqttConfig()">
                         MQTT 설정 업데이트
@@ -257,10 +257,11 @@
 
         function updateMqttConfig() {
             const config = {
-                host: document.getElementById('mqtt-host').value || 'localhost',
-                port: parseInt(document.getElementById('mqtt-port').value) || 1883,
-                username: document.getElementById('mqtt-username').value || '',
-                password: document.getElementById('mqtt-password').value || ''
+                host: document.getElementById('mqtt-host').value || '{{ env_mqtt_host }}' || 'localhost',
+                port: parseInt(document.getElementById('mqtt-port').value) || {{ env_mqtt_port }} || 1883,
+                username: document.getElementById('mqtt-username').value || '{{ env_mqtt_username }}' || '',
+                password: document.getElementById('mqtt-password').value || '{{ env_mqtt_password }}' || '',
+                use_tls: '{{ env_mqtt_use_tls }}' === 'true'
             };
 
             fetch('/api/update_mqtt_config', {
