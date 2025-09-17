@@ -9,6 +9,8 @@ import logging
 import configparser
 import os
 import ssl
+import socket
+import re
 from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
@@ -21,7 +23,7 @@ class BMTLMQTTDaemon:
         self.log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
         self.client = None
         self.running = True
-        
+
         self.setup_logging()
         self.load_config()
         
@@ -49,7 +51,24 @@ class BMTLMQTTDaemon:
         message_handler.setFormatter(message_formatter)
         self.message_logger.addHandler(message_handler)
         self.message_logger.propagate = False
-        
+
+    def extract_device_id_from_hostname(self):
+        """Extract device ID from hostname (e.g., bmotion01 -> 01)"""
+        try:
+            hostname = socket.gethostname()
+            # Look for pattern like bmotion01, bmotion02, etc.
+            match = re.search(r'bmotion(\d+)', hostname.lower())
+            if match:
+                device_num = match.group(1).zfill(2)  # Ensure 2-digit format
+                self.logger.info(f"Extracted device ID '{device_num}' from hostname '{hostname}'")
+                return device_num
+            else:
+                self.logger.warning(f"Could not extract device ID from hostname '{hostname}', using default '01'")
+                return "01"
+        except Exception as e:
+            self.logger.error(f"Error extracting device ID from hostname: {e}, using default '01'")
+            return "01"
+
     def load_config(self):
         # Load .env file first
         env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
@@ -72,8 +91,18 @@ class BMTLMQTTDaemon:
             self.mqtt_use_tls = os.getenv('MQTT_USE_TLS', self.config.get('mqtt', 'use_tls', fallback='false')).lower() == 'true'
             self.mqtt_client_id = self.config.get('mqtt', 'client_id', fallback='bmtl-device')
             
-            # Device Configuration
-            self.device_id = self.config.get('device', 'id', fallback='raspberry-pi')
+            # Device Configuration - prioritize hostname-based ID
+            hostname_device_id = self.extract_device_id_from_hostname()
+            config_device_id = self.config.get('device', 'id', fallback=None)
+
+            # Use hostname-derived ID if it looks like a number, otherwise use config
+            if hostname_device_id != "01" or not config_device_id:
+                self.device_id = hostname_device_id
+                self.logger.info(f"Using device ID from hostname: {self.device_id}")
+            else:
+                self.device_id = config_device_id
+                self.logger.info(f"Using device ID from config: {self.device_id}")
+
             self.device_location = self.config.get('device', 'location', fallback='unknown')
             
             # Topics
