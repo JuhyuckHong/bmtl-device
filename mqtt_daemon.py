@@ -151,6 +151,9 @@ class BMTLMQTTDaemon:
             
             # Send initial status
             self.send_status("online")
+
+            # Send initial health status (protocol spec)
+            self.send_health_status()
             
         else:
             self.logger.error(f"Failed to connect to MQTT broker with result code {rc}")
@@ -266,6 +269,7 @@ class BMTLMQTTDaemon:
             self.logger.error(f"Error handling camera command: {e}")
             
     def send_status(self, status):
+        """Send device status - used for immediate status updates"""
         try:
             payload = {
                 'device_id': self.device_id,
@@ -274,27 +278,73 @@ class BMTLMQTTDaemon:
                 'timestamp': datetime.now().isoformat(),
                 'uptime': self.get_uptime()
             }
-            
+
             topic = f"{self.status_topic}/{self.device_id}"
             self.client.publish(topic, json.dumps(payload), retain=True)
             self.logger.info(f"Status sent: {status}")
-            
+
         except Exception as e:
             self.logger.error(f"Error sending status: {e}")
-            
+
+    def send_health_status(self):
+        """Send detailed health status according to protocol spec"""
+        try:
+            payload = {
+                'module_id': f"bmotion{self.device_id}",
+                'status': 'online',
+                'battery_level': 85,  # TODO: Get actual battery level
+                'storage_used': self.get_storage_usage(),
+                'last_capture_time': datetime.now().isoformat(),  # TODO: Get from camera daemon
+                'last_boot_time': self.get_boot_time(),
+                'site_name': self.device_location,
+                'today_total_captures': 100,  # TODO: Get from camera daemon
+                'today_captured_count': 85,   # TODO: Get from camera daemon
+                'missed_captures': 3,         # TODO: Get from camera daemon
+                'timestamp': datetime.now().isoformat()
+            }
+
+            # Use protocol spec topic format
+            topic = f"bmtl/status/health/{self.device_id}"
+            self.client.publish(topic, json.dumps(payload), qos=1)
+            self.logger.info("Health status sent")
+
+        except Exception as e:
+            self.logger.error(f"Error sending health status: {e}")
+
     def send_heartbeat(self):
+        """Send simple heartbeat - kept for backward compatibility"""
         try:
             payload = {
                 'device_id': self.device_id,
                 'timestamp': datetime.now().isoformat(),
                 'uptime': self.get_uptime()
             }
-            
+
             topic = f"{self.heartbeat_topic}/{self.device_id}"
             self.client.publish(topic, json.dumps(payload))
-            
+
         except Exception as e:
             self.logger.error(f"Error sending heartbeat: {e}")
+
+    def get_storage_usage(self):
+        """Get storage usage percentage"""
+        try:
+            import shutil
+            total, used, free = shutil.disk_usage("/")
+            return round((used / total) * 100, 1)
+        except:
+            return 0.0
+
+    def get_boot_time(self):
+        """Get system boot time"""
+        try:
+            with open('/proc/stat', 'r') as f:
+                for line in f:
+                    if line.startswith('btime'):
+                        boot_timestamp = int(line.split()[1])
+                        return datetime.fromtimestamp(boot_timestamp).isoformat()
+        except:
+            return datetime.now().isoformat()
             
     def get_uptime(self):
         try:
@@ -353,16 +403,22 @@ class BMTLMQTTDaemon:
             
             last_heartbeat = 0
             last_status = 0
-            
+            last_health = 0
+
             while self.running:
                 current_time = time.time()
-                
-                # Send heartbeat
+
+                # Send heartbeat (backward compatibility)
                 if current_time - last_heartbeat >= self.heartbeat_interval:
                     self.send_heartbeat()
                     last_heartbeat = current_time
-                    
-                # Send status update
+
+                # Send detailed health status (protocol spec)
+                if current_time - last_health >= self.heartbeat_interval:
+                    self.send_health_status()
+                    last_health = current_time
+
+                # Send status update (less frequent)
                 if current_time - last_status >= self.status_interval:
                     self.send_status("online")
                     last_status = current_time
