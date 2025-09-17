@@ -62,6 +62,11 @@ if [ -d "$APP_DIR/venv" ] && [ -f "$APP_DIR/mqtt_daemon.py" ]; then
     cp -f *.ini $APP_DIR/ 2>/dev/null || true
     cp -f *.sh $APP_DIR/ 2>/dev/null || true
     cp -f .env.example $APP_DIR/ 2>/dev/null || true
+
+    # Ensure both services are stopped and disabled during update
+    echo "🔄 Ensuring services are stopped for update..."
+    sudo systemctl stop bmtl-device bmtl-camera 2>/dev/null || true
+    sudo systemctl disable bmtl-device bmtl-camera 2>/dev/null || true
 else
     echo "📋 Installing fresh copy..."
     # Copy all application files
