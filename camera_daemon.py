@@ -319,8 +319,9 @@ class BMTLCameraDaemon:
             try:
                 # Check for scheduled tasks
                 schedule = read_camera_schedule()
-                if schedule and schedule.get('enabled'):
+                if schedule and schedule.get('enabled', False):
                     self.check_and_execute_schedule(schedule)
+                # If no schedule file exists or schedule is disabled, just wait
 
                 time.sleep(60)  # Check every minute
 

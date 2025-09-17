@@ -121,6 +121,11 @@ class SafeFileConfig:
             except OSError:
                 pass  # File doesn't exist, will be handled below
 
+        # Check if file exists before attempting to lock/read
+        if not os.path.exists(filepath):
+            self.logger.debug(f"Config file not found: {filename}")
+            return {}
+
         # Read from file
         try:
             with self._file_lock(filepath):
@@ -140,7 +145,7 @@ class SafeFileConfig:
                 return data
 
         except FileNotFoundError:
-            self.logger.warning(f"Config file not found: {filename}")
+            self.logger.debug(f"Config file disappeared during read: {filename}")
             return {}
         except Exception as e:
             self.logger.error(f"Failed to read config {filename}: {e}")
