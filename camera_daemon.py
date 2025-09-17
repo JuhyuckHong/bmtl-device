@@ -74,29 +74,100 @@ class CameraController:
             cmd = ['gphoto2', '--capture-image-and-download', '--filename', filepath]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
+            capture_result = {
+                'success': result.returncode == 0,
+                'filename': filename if result.returncode == 0 else None,
+                'filepath': filepath if result.returncode == 0 else None,
+                'timestamp': datetime.now().isoformat(),
+                'config': self.current_config.copy()
+            }
+
             if result.returncode == 0:
                 self.logger.info(f"Photo captured successfully: {filename}")
-                return {
-                    'success': True,
-                    'filename': filename,
-                    'filepath': filepath,
-                    'timestamp': datetime.now().isoformat(),
-                    'config': self.current_config.copy()
-                }
+                # Update capture statistics
+                self.update_capture_stats(True)
             else:
                 self.logger.error(f"Photo capture failed: {result.stderr}")
-                return {
-                    'success': False,
-                    'error': result.stderr,
-                    'timestamp': datetime.now().isoformat()
-                }
+                capture_result['error'] = result.stderr
+                # Update missed capture count
+                self.update_capture_stats(False)
+
+            return capture_result
 
         except Exception as e:
             self.logger.error(f"Error capturing photo: {e}")
+            # Update missed capture count
+            self.update_capture_stats(False)
             return {
                 'success': False,
                 'error': str(e),
                 'timestamp': datetime.now().isoformat()
+            }
+
+    def update_capture_stats(self, success):
+        """Update capture statistics"""
+        try:
+            from shared_config import config_manager
+
+            # Read current stats
+            stats = config_manager.read_config('camera_stats.json')
+            today = datetime.now().strftime('%Y-%m-%d')
+
+            # Initialize stats if empty or new day
+            if not stats or stats.get('date') != today:
+                stats = {
+                    'date': today,
+                    'total_captures': 0,
+                    'successful_captures': 0,
+                    'missed_captures': 0,
+                    'last_capture_time': None,
+                    'last_successful_capture': None
+                }
+
+            # Update stats
+            stats['total_captures'] += 1
+            stats['last_capture_time'] = datetime.now().isoformat()
+
+            if success:
+                stats['successful_captures'] += 1
+                stats['last_successful_capture'] = datetime.now().isoformat()
+            else:
+                stats['missed_captures'] += 1
+
+            # Save updated stats
+            config_manager.write_config('camera_stats.json', stats)
+
+        except Exception as e:
+            self.logger.error(f"Error updating capture stats: {e}")
+
+    def get_capture_stats(self):
+        """Get current capture statistics"""
+        try:
+            from shared_config import config_manager
+            stats = config_manager.read_config('camera_stats.json')
+            today = datetime.now().strftime('%Y-%m-%d')
+
+            # Return today's stats or defaults
+            if stats and stats.get('date') == today:
+                return stats
+            else:
+                return {
+                    'date': today,
+                    'total_captures': 0,
+                    'successful_captures': 0,
+                    'missed_captures': 0,
+                    'last_capture_time': None,
+                    'last_successful_capture': None
+                }
+        except Exception as e:
+            self.logger.error(f"Error getting capture stats: {e}")
+            return {
+                'date': datetime.now().strftime('%Y-%m-%d'),
+                'total_captures': 0,
+                'successful_captures': 0,
+                'missed_captures': 0,
+                'last_capture_time': None,
+                'last_successful_capture': None
             }
 
     def get_camera_status(self):
@@ -294,8 +365,13 @@ class BMTLCameraDaemon:
 
             self.logger.info(f"Scheduled capture completed: {result}")
 
+            # Save capture result for MQTT to report
+            config_manager.write_config('camera_result.json', result)
+
         except Exception as e:
             self.logger.error(f"Error in scheduled capture: {e}")
+            # Also update stats for failed scheduled capture
+            self.camera.update_capture_stats(False)
 
     def signal_handler(self, signum, frame):
         self.logger.info(f"Received signal {signum}, shutting down gracefully...")

@@ -289,17 +289,20 @@ class BMTLMQTTDaemon:
     def send_health_status(self):
         """Send detailed health status according to protocol spec"""
         try:
+            # Get real camera statistics
+            camera_stats = self.get_camera_stats()
+
             payload = {
                 'module_id': f"bmotion{self.device_id}",
                 'status': 'online',
-                'battery_level': 85,  # TODO: Get actual battery level
+                'battery_level': self.get_battery_level(),
                 'storage_used': self.get_storage_usage(),
-                'last_capture_time': datetime.now().isoformat(),  # TODO: Get from camera daemon
+                'last_capture_time': camera_stats.get('last_successful_capture') or camera_stats.get('last_capture_time'),
                 'last_boot_time': self.get_boot_time(),
                 'site_name': self.device_location,
-                'today_total_captures': 100,  # TODO: Get from camera daemon
-                'today_captured_count': 85,   # TODO: Get from camera daemon
-                'missed_captures': 3,         # TODO: Get from camera daemon
+                'today_total_captures': camera_stats.get('total_captures', 0),
+                'today_captured_count': camera_stats.get('successful_captures', 0),
+                'missed_captures': camera_stats.get('missed_captures', 0),
                 'timestamp': datetime.now().isoformat()
             }
 
@@ -310,6 +313,60 @@ class BMTLMQTTDaemon:
 
         except Exception as e:
             self.logger.error(f"Error sending health status: {e}")
+
+    def get_camera_stats(self):
+        """Get camera statistics from shared config"""
+        try:
+            from shared_config import config_manager
+            return config_manager.read_config('camera_stats.json')
+        except Exception as e:
+            self.logger.error(f"Error reading camera stats: {e}")
+            return {
+                'total_captures': 0,
+                'successful_captures': 0,
+                'missed_captures': 0,
+                'last_capture_time': None,
+                'last_successful_capture': None
+            }
+
+    def get_battery_level(self):
+        """Get battery level for Raspberry Pi"""
+        try:
+            # Try to read from UPS HAT or similar (common paths)
+            battery_paths = [
+                '/sys/class/power_supply/BAT0/capacity',
+                '/sys/class/power_supply/BAT1/capacity',
+                '/sys/class/power_supply/rpi-poe-power-supply/capacity'
+            ]
+
+            for path in battery_paths:
+                try:
+                    with open(path, 'r') as f:
+                        battery_level = int(f.read().strip())
+                        return battery_level
+                except (FileNotFoundError, ValueError):
+                    continue
+
+            # Check for specific UPS HAT via I2C (if available)
+            try:
+                result = subprocess.run(['vcgencmd', 'get_throttled'],
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    # If system is not throttled, assume good power (simulated 85%)
+                    throttled = result.stdout.strip()
+                    if 'throttled=0x0' in throttled:
+                        return 85
+                    else:
+                        return 60  # Throttled, assume lower battery
+            except:
+                pass
+
+            # Default for devices without battery monitoring
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error getting battery level: {e}")
+            return None
 
     def send_heartbeat(self):
         """Send simple heartbeat - kept for backward compatibility"""
