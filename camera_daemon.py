@@ -137,8 +137,13 @@ class BMTLCameraDaemon:
 
         self.setup_logging()
 
-        # Ensure config directory exists
-        os.makedirs(self.config_path, exist_ok=True)
+        # Ensure config directory exists (create early to avoid systemd issues)
+        try:
+            os.makedirs(self.config_path, exist_ok=True)
+            self.logger.info(f"Config directory created/verified: {self.config_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to create config directory: {e}")
+            sys.exit(1)
 
         self.logger.info("BMTL Camera Daemon initialized")
 
