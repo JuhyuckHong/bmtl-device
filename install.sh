@@ -5,7 +5,37 @@
 
 set -e
 
-echo "🔧 Installing BMTL Device MQTT Client Daemon..."
+# Enable safety mode for updates
+BACKUP_DIR="/opt/bmtl-device-backup"
+UPDATE_MODE="${1:-install}"  # install, update, or rollback
+
+echo "🔧 BMTL Device MQTT Client Daemon - Mode: $UPDATE_MODE"
+
+# Function to create backup before update
+create_backup() {
+    if [ "$UPDATE_MODE" = "update" ] && [ -d "/opt/bmtl-device" ]; then
+        echo "💾 Creating backup before update..."
+        sudo rm -rf "$BACKUP_DIR" 2>/dev/null || true
+        sudo cp -r "/opt/bmtl-device" "$BACKUP_DIR"
+        echo "✅ Backup created at $BACKUP_DIR"
+    fi
+}
+
+# Function to rollback if update fails
+rollback_on_failure() {
+    if [ "$UPDATE_MODE" = "update" ] && [ -d "$BACKUP_DIR" ]; then
+        echo "🔄 Rolling back to previous version..."
+        sudo systemctl stop bmtl-device bmtl-camera 2>/dev/null || true
+        sudo rm -rf "/opt/bmtl-device"
+        sudo mv "$BACKUP_DIR" "/opt/bmtl-device"
+        sudo systemctl start bmtl-device bmtl-camera 2>/dev/null || true
+        echo "✅ Rollback completed"
+        exit 1
+    fi
+}
+
+# Trap to handle failures during update
+trap 'if [ "$UPDATE_MODE" = "update" ]; then rollback_on_failure; fi' ERR
 
 # Check if services are already running and stop them
 if systemctl is-active --quiet bmtl-device; then
@@ -28,6 +58,9 @@ if systemctl is-enabled --quiet bmtl-camera 2>/dev/null; then
     echo "🔄 Disabling existing bmtl-camera service..."
     sudo systemctl disable bmtl-camera
 fi
+
+# Create backup before starting (only for updates)
+create_backup
 
 # Check if running on Raspberry Pi
 if ! grep -q "Raspberry Pi\|BCM" /proc/cpuinfo; then
@@ -157,6 +190,13 @@ echo "Camera Daemon: $CAMERA_STATUS"
 
 if [[ "$MQTT_STATUS" == "active" && "$CAMERA_STATUS" == "active" ]]; then
     echo "✅ Installation completed successfully! Both services are running."
+
+    # Clean up backup on successful update
+    if [ "$UPDATE_MODE" = "update" ] && [ -d "$BACKUP_DIR" ]; then
+        echo "🧹 Cleaning up backup (update successful)..."
+        sudo rm -rf "$BACKUP_DIR"
+    fi
+
     echo ""
     echo "📝 To view logs:"
     echo "   sudo journalctl -u bmtl-device -f    # MQTT daemon"
@@ -169,10 +209,20 @@ if [[ "$MQTT_STATUS" == "active" && "$CAMERA_STATUS" == "active" ]]; then
     echo "⚙️  Configuration file: /etc/bmtl-device/config.ini"
     echo "⚙️  Environment file: $APP_DIR/.env"
     echo "📂 Camera config directory: /tmp/bmtl-config"
+
+    # Disable error trap since we succeeded
+    trap - ERR
 else
     echo "⚠️  Some services failed to start. Check status with:"
     echo "   sudo systemctl status bmtl-device"
     echo "   sudo systemctl status bmtl-camera"
     echo "   sudo journalctl -u bmtl-device -f"
     echo "   sudo journalctl -u bmtl-camera -f"
+
+    # Trigger rollback on failure
+    if [ "$UPDATE_MODE" = "update" ]; then
+        echo "💥 Update failed, initiating rollback..."
+        rollback_on_failure
+    fi
+    exit 1
 fi

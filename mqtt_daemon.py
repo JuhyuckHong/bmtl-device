@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 import paho.mqtt.client as mqtt
 from shared_config import write_camera_config, write_camera_command, write_camera_schedule, read_camera_config
+from version_manager import version_manager, get_version_for_mqtt
 
 class BMTLMQTTDaemon:
     def __init__(self):
@@ -145,7 +146,8 @@ class BMTLMQTTDaemon:
                 f"bmtl/request/options/{self.device_id}",
                 "bmtl/request/options/all",
                 f"bmtl/request/wiper/{self.device_id}",
-                f"bmtl/request/camera-on-off/{self.device_id}"
+                f"bmtl/request/camera-on-off/{self.device_id}",
+                f"bmtl/sw-update/{self.device_id}"
             ]
 
             for topic in request_topics:
@@ -168,7 +170,10 @@ class BMTLMQTTDaemon:
 
             # Clear any old retained messages from incorrect device IDs
             self.clear_old_retained_messages()
-            
+
+            # Send version information on startup
+            self.send_version_info()
+
         else:
             self.logger.error(f"Failed to connect to MQTT broker with result code {rc}")
             
@@ -235,8 +240,12 @@ class BMTLMQTTDaemon:
                     self.handle_wiper_request()
                 elif topic == f"bmtl/request/camera-on-off/{self.device_id}":
                     self.handle_camera_power_request()
+                elif topic == f"bmtl/sw-update/{self.device_id}":
+                    self.handle_software_update()
             except json.JSONDecodeError:
-                self.logger.error(f"Invalid JSON in message: {payload}")
+                # sw-update doesn't require JSON, so only log for other topics
+                if not topic.startswith("bmtl/sw-update"):
+                    self.logger.error(f"Invalid JSON in message: {payload}")
             except Exception as e:
                 self.logger.error(f"Error processing message: {e}")
 
@@ -433,7 +442,127 @@ class BMTLMQTTDaemon:
             self.logger.info("Camera power toggle requested")
         except Exception as e:
             self.logger.error(f"Error handling camera power request: {e}")
-            
+
+    def handle_software_update(self):
+        """Handle bmtl/sw-update/{device_id} - Remote software update"""
+        import threading
+        import subprocess
+
+        try:
+            self.logger.info("🔄 Remote software update requested")
+
+            # Send immediate response
+            payload = {
+                "response_type": "sw_update_result",
+                "module_id": f"bmotion{self.device_id}",
+                "status": "started",
+                "message": "Software update initiated",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(payload), qos=1)
+
+            # Run update in background thread to avoid blocking MQTT
+            update_thread = threading.Thread(target=self._execute_software_update, daemon=True)
+            update_thread.start()
+
+        except Exception as e:
+            self.logger.error(f"Error handling software update request: {e}")
+            # Send error response
+            error_payload = {
+                "response_type": "sw_update_result",
+                "module_id": f"bmotion{self.device_id}",
+                "status": "error",
+                "message": f"Update failed to start: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(error_payload), qos=1)
+
+    def _execute_software_update(self):
+        """Execute the actual software update process"""
+        try:
+            app_dir = "/opt/bmtl-device"
+
+            # Change to application directory
+            original_cwd = os.getcwd()
+            os.chdir(app_dir)
+
+            self.logger.info("🔄 Starting git stash...")
+            result = subprocess.run(['git', 'stash'], capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                self.logger.warning(f"Git stash warning: {result.stderr}")
+
+            self.logger.info("🔄 Starting git pull...")
+            result = subprocess.run(['git', 'pull'], capture_output=True, text=True, timeout=60)
+            if result.returncode != 0:
+                raise Exception(f"Git pull failed: {result.stderr}")
+
+            self.logger.info("🔄 Setting install.sh permissions...")
+            result = subprocess.run(['chmod', '+x', './install.sh'], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                raise Exception(f"Chmod failed: {result.stderr}")
+
+            self.logger.info("🔄 Running install.sh in update mode...")
+            result = subprocess.run(['sudo', './install.sh', 'update'], capture_output=True, text=True, timeout=300)
+
+            # Restore original directory
+            os.chdir(original_cwd)
+
+            if result.returncode == 0:
+                self.logger.info("✅ Software update completed successfully")
+                success_payload = {
+                    "response_type": "sw_update_result",
+                    "module_id": f"bmotion{self.device_id}",
+                    "status": "completed",
+                    "message": "Software update completed successfully",
+                    "timestamp": datetime.now().isoformat()
+                }
+                self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(success_payload), qos=1)
+
+                # Send updated version information
+                time.sleep(1)  # Brief delay to ensure update message is sent first
+                self.send_version_info()
+
+                # Services will be restarted by install.sh, so this daemon will restart
+
+            else:
+                raise Exception(f"Install script failed: {result.stderr}")
+
+        except Exception as e:
+            self.logger.error(f"💥 Software update failed: {e}")
+            error_payload = {
+                "response_type": "sw_update_result",
+                "module_id": f"bmotion{self.device_id}",
+                "status": "failed",
+                "message": f"Software update failed: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            try:
+                self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(error_payload), qos=1)
+            except:
+                pass  # MQTT might be disconnected at this point
+
+    def send_version_info(self):
+        """Send software version information to server"""
+        try:
+            version_info = get_version_for_mqtt()
+
+            payload = {
+                "response_type": "sw_version",
+                "module_id": f"bmotion{self.device_id}",
+                "sw_version": version_info["sw_version"],
+                "commit_hash": version_info["commit_hash"],
+                "branch": version_info["branch"],
+                "update_time": version_info["update_time"],
+                "timestamp": datetime.now().isoformat()
+            }
+
+            topic = f"bmtl/response/sw-version/{self.device_id}"
+            self.client.publish(topic, json.dumps(payload), qos=1, retain=True)
+            self.logger.info(f"Version info sent: {version_info['sw_version']}")
+
+        except Exception as e:
+            self.logger.error(f"Error sending version info: {e}")
+
     def send_status(self, status):
         """Send device status - used for immediate status updates"""
         try:
@@ -469,6 +598,8 @@ class BMTLMQTTDaemon:
                 'today_total_captures': camera_stats.get('total_captures', 0),
                 'today_captured_count': camera_stats.get('successful_captures', 0),
                 'missed_captures': camera_stats.get('missed_captures', 0),
+                'sw_version': get_version_for_mqtt()["sw_version"],
+                'commit_hash': get_version_for_mqtt()["commit_hash"],
                 'timestamp': datetime.now().isoformat()
             }
 
@@ -562,10 +693,13 @@ class BMTLMQTTDaemon:
     def send_heartbeat(self):
         """Send simple heartbeat - kept for backward compatibility"""
         try:
+            version_info = get_version_for_mqtt()
             payload = {
                 'device_id': self.device_id,
                 'timestamp': datetime.now().isoformat(),
-                'uptime': self.get_uptime()
+                'uptime': self.get_uptime(),
+                'sw_version': version_info["sw_version"],
+                'commit_hash': version_info["commit_hash"]
             }
 
             topic = f"{self.heartbeat_topic}/{self.device_id}"
