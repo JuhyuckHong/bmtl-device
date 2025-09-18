@@ -11,6 +11,7 @@ import os
 import ssl
 import socket
 import re
+import subprocess
 from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
