@@ -14,14 +14,31 @@ class SafeFileConfig:
     Uses tmpfs for performance and implements file locking for safety
     """
 
-    def __init__(self, base_path='/tmp/bmtl-config'):
-        self.base_path = base_path
+    def __init__(self, base_path='/tmp/bmtl-config', persistent_path='/etc/bmtl-device'):
+        self.base_path = base_path  # For temporary configs (camera commands)
+        self.persistent_path = persistent_path  # For persistent configs (schedules)
         self._cache = {}
         self._last_modified = {}
         self.logger = logging.getLogger('SafeFileConfig')
 
-        # Create base directory if it doesn't exist
+        # Create directories if they don't exist
         os.makedirs(self.base_path, exist_ok=True)
+        os.makedirs(self.persistent_path, exist_ok=True)
+
+    def _get_file_path(self, filename):
+        """Get appropriate file path based on file type"""
+        # Persistent configs go to /etc/bmtl-device
+        persistent_files = [
+            'camera_schedule.json',
+            'camera_default_config.json',
+            'device_settings.json'
+        ]
+
+        if filename in persistent_files:
+            return os.path.join(self.persistent_path, filename)
+        else:
+            # Temporary configs (commands, stats) go to /tmp/bmtl-config
+            return os.path.join(self.base_path, filename)
 
     @contextlib.contextmanager
     def _file_lock(self, filepath):
@@ -74,7 +91,7 @@ class SafeFileConfig:
             filename (str): Config file name (e.g., 'camera_config.json')
             data (dict): Configuration data to write
         """
-        filepath = os.path.join(self.base_path, filename)
+        filepath = self._get_file_path(filename)
 
         try:
             with self._file_lock(filepath):
@@ -107,7 +124,7 @@ class SafeFileConfig:
         Returns:
             dict: Configuration data
         """
-        filepath = os.path.join(self.base_path, filename)
+        filepath = self._get_file_path(filename)
 
         # Check cache first
         if use_cache and filename in self._cache:
@@ -153,12 +170,12 @@ class SafeFileConfig:
 
     def config_exists(self, filename):
         """Check if config file exists"""
-        filepath = os.path.join(self.base_path, filename)
+        filepath = self._get_file_path(filename)
         return os.path.exists(filepath)
 
     def delete_config(self, filename):
         """Delete config file and clear from cache"""
-        filepath = os.path.join(self.base_path, filename)
+        filepath = self._get_file_path(filename)
 
         try:
             with self._file_lock(filepath):
@@ -176,12 +193,27 @@ class SafeFileConfig:
             raise
 
     def list_configs(self):
-        """List all available config files"""
+        """List all available config files from both directories"""
         try:
             files = []
-            for filename in os.listdir(self.base_path):
-                if filename.endswith('.json') and not filename.endswith('.lock'):
-                    files.append(filename)
+
+            # List from temp directory
+            try:
+                for filename in os.listdir(self.base_path):
+                    if filename.endswith('.json') and not filename.endswith('.lock'):
+                        files.append(filename)
+            except FileNotFoundError:
+                pass
+
+            # List from persistent directory
+            try:
+                for filename in os.listdir(self.persistent_path):
+                    if filename.endswith('.json') and not filename.endswith('.lock'):
+                        if filename not in files:  # Avoid duplicates
+                            files.append(filename)
+            except FileNotFoundError:
+                pass
+
             return files
         except Exception as e:
             self.logger.error(f"Failed to list configs: {e}")
