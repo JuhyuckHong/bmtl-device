@@ -107,7 +107,7 @@ class BMTLMQTTDaemon:
                 self.device_id = config_device_id or hostname_device_id
                 self.logger.info(f"Using device ID from config: {self.device_id}")
 
-            self.device_location = self.config.get('device', 'location', fallback='unknown')
+            self.device_sitename = self.config.get('device', 'sitename', fallback=socket.gethostname())
             
             # Topics
             self.status_topic = self.config.get('topics', 'status', fallback='bmtl/device/status')
@@ -439,7 +439,7 @@ class BMTLMQTTDaemon:
         try:
             payload = {
                 'device_id': self.device_id,
-                'location': self.device_location,
+                'sitename': self.device_sitename,
                 'status': status,
                 'timestamp': datetime.now().isoformat(),
                 'uptime': self.get_uptime()
@@ -465,7 +465,7 @@ class BMTLMQTTDaemon:
                 'storage_used': self.get_storage_usage(),
                 'last_capture_time': camera_stats.get('last_successful_capture') or camera_stats.get('last_capture_time'),
                 'last_boot_time': self.get_boot_time(),
-                'site_name': self.device_location,
+                'site_name': self.device_sitename,
                 'today_total_captures': camera_stats.get('total_captures', 0),
                 'today_captured_count': camera_stats.get('successful_captures', 0),
                 'missed_captures': camera_stats.get('missed_captures', 0),
@@ -623,6 +623,7 @@ class BMTLMQTTDaemon:
         # Set will message
         will_payload = {
             'device_id': self.device_id,
+            'sitename': self.device_sitename,
             'status': 'offline',
             'timestamp': datetime.now().isoformat()
         }

@@ -90,12 +90,33 @@ pip install paho-mqtt configparser python-dotenv inotify-simple
 # Create config directory
 sudo mkdir -p /etc/bmtl-device
 
-# Copy default configuration if it doesn't exist
-if [ ! -f /etc/bmtl-device/config.ini ]; then
-    echo "⚙️  Creating default configuration..."
-    sudo cp config.ini /etc/bmtl-device/
-    echo "📝 Please edit /etc/bmtl-device/config.ini to configure your MQTT settings"
+# Setup configuration file
+echo "⚙️  Setting up configuration..."
+
+# Extract device ID from hostname
+HOSTNAME=$(hostname)
+DEVICE_ID="01"  # default
+
+if [[ $HOSTNAME =~ bmotion([0-9]+) ]]; then
+    DEVICE_ID=$(printf "%02d" ${BASH_REMATCH[1]})
+    echo "📍 Detected device ID from hostname: $DEVICE_ID"
+else
+    echo "⚠️  Could not extract device ID from hostname '$HOSTNAME', using default: $DEVICE_ID"
 fi
+
+# Copy and customize configuration
+if [ ! -f /etc/bmtl-device/config.ini ]; then
+    sudo cp config.ini /etc/bmtl-device/
+fi
+
+# Update device ID and sitename in config
+sudo sed -i "s/^id = .*/id = $DEVICE_ID/" /etc/bmtl-device/config.ini
+sudo sed -i "s/^location = .*/sitename = $HOSTNAME/" /etc/bmtl-device/config.ini
+
+echo "📝 Configuration updated:"
+echo "   Device ID: $DEVICE_ID"
+echo "   Site Name: $HOSTNAME"
+echo "   Config file: /etc/bmtl-device/config.ini"
 
 # Install systemd services
 echo "🔧 Installing systemd services..."
