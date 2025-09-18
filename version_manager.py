@@ -6,6 +6,7 @@ Provides software version information using git
 """
 
 import os
+import shutil
 import subprocess
 import json
 import logging
@@ -21,6 +22,11 @@ class VersionManager:
     def get_git_version(self):
         """Get version information from git"""
         try:
+            # If git is not available or directory is not a git repo, skip to fallback
+            if not shutil.which('git') or not os.path.isdir(os.path.join(self.app_dir, '.git')):
+                # No error in normal operation on devices without git
+                return self.get_fallback_version()
+
             original_cwd = os.getcwd()
             os.chdir(self.app_dir)
 
@@ -98,10 +104,13 @@ class VersionManager:
         """Get comprehensive version information"""
         version_info = self.get_git_version()
 
-        # Add file version if available
+        # Add file version if available; if git unknown, promote file version to main
         file_version = self.get_file_version()
         if file_version:
-            version_info["file_version"] = file_version
+            if not version_info.get("version") or version_info.get("version") in ("unknown", "no-tag", ""):
+                version_info["version"] = file_version
+            else:
+                version_info["file_version"] = file_version
 
         return version_info
 

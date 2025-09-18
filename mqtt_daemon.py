@@ -586,6 +586,7 @@ class BMTLMQTTDaemon:
         try:
             # Get real camera statistics
             camera_stats = self.get_camera_stats()
+            vinfo = get_version_for_mqtt()
 
             payload = {
                 'module_id': f"bmotion{self.device_id}",
@@ -598,8 +599,8 @@ class BMTLMQTTDaemon:
                 'today_total_captures': camera_stats.get('total_captures', 0),
                 'today_captured_count': camera_stats.get('successful_captures', 0),
                 'missed_captures': camera_stats.get('missed_captures', 0),
-                'sw_version': get_version_for_mqtt()["sw_version"],
-                'commit_hash': get_version_for_mqtt()["commit_hash"],
+                'sw_version': vinfo["sw_version"],
+                'commit_hash': vinfo["commit_hash"],
                 'timestamp': datetime.now().isoformat()
             }
 
@@ -737,7 +738,13 @@ class BMTLMQTTDaemon:
             return 0
             
     def setup_mqtt_client(self):
-        self.client = mqtt.Client(client_id=self.mqtt_client_id)
+        # Explicitly set callback API version to avoid deprecation warning on paho-mqtt>=2
+        try:
+            self.client = mqtt.Client(client_id=self.mqtt_client_id,
+                                      callback_api_version=mqtt.CallbackAPIVersion.VERSION1)
+        except AttributeError:
+            # Older paho-mqtt versions do not expose CallbackAPIVersion
+            self.client = mqtt.Client(client_id=self.mqtt_client_id)
         
         # Set username and password if provided
         if self.mqtt_username and self.mqtt_password:
