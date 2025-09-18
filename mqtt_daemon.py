@@ -154,6 +154,9 @@ class BMTLMQTTDaemon:
 
             # Send initial health status (protocol spec)
             self.send_health_status()
+
+            # Clear any old retained messages from incorrect device IDs
+            self.clear_old_retained_messages()
             
         else:
             self.logger.error(f"Failed to connect to MQTT broker with result code {rc}")
@@ -177,8 +180,15 @@ class BMTLMQTTDaemon:
         try:
             topic = msg.topic
             payload = msg.payload.decode('utf-8')
-            
-            # Log all messages to separate file if enabled
+
+            # Skip messages from our own device to avoid echo
+            if (topic.endswith(f"/{self.device_id}") and
+                (topic.startswith(self.status_topic) or
+                 topic.startswith(self.heartbeat_topic) or
+                 topic.startswith("bmtl/status/health"))):
+                return  # Don't process our own status/health messages
+
+            # Log all messages to separate file if enabled (except our own)
             if self.log_all_messages:
                 message_info = {
                     'topic': topic,
@@ -188,9 +198,9 @@ class BMTLMQTTDaemon:
                     'timestamp': datetime.now().isoformat()
                 }
                 self.message_logger.info(json.dumps(message_info, ensure_ascii=False))
-            
+
             self.logger.info(f"Received message on {topic}: {payload}")
-            
+
             # Handle command messages specifically
             if topic.startswith(self.command_topic):
                 try:
@@ -206,7 +216,7 @@ class BMTLMQTTDaemon:
                     self.handle_camera_command(camera_command)
                 except json.JSONDecodeError:
                     self.logger.error(f"Invalid JSON in camera command: {payload}")
-                
+
         except Exception as e:
             self.logger.error(f"Error handling message: {e}")
             
@@ -367,6 +377,31 @@ class BMTLMQTTDaemon:
         except Exception as e:
             self.logger.error(f"Error getting battery level: {e}")
             return None
+
+    def clear_old_retained_messages(self):
+        """Clear retained messages from old/incorrect device IDs"""
+        try:
+            # Get current hostname to determine what device IDs to clear
+            hostname = socket.gethostname()
+            if 'bmotion' in hostname.lower():
+                # Clear common incorrect IDs that might exist
+                incorrect_ids = ['bmotion101', 'raspberry-pi-001', 'raspberry-pi']
+
+                for incorrect_id in incorrect_ids:
+                    if incorrect_id != self.device_id:
+                        # Send empty retained messages to clear old ones
+                        clear_topics = [
+                            f"{self.status_topic}/{incorrect_id}",
+                            f"{self.heartbeat_topic}/{incorrect_id}",
+                            f"bmtl/status/health/{incorrect_id}"
+                        ]
+
+                        for topic in clear_topics:
+                            self.client.publish(topic, "", retain=True)
+                            self.logger.info(f"Cleared retained message for topic: {topic}")
+
+        except Exception as e:
+            self.logger.error(f"Error clearing old retained messages: {e}")
 
     def send_heartbeat(self):
         """Send simple heartbeat - kept for backward compatibility"""
