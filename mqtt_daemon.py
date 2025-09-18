@@ -124,6 +124,7 @@ class BMTLMQTTDaemon:
             
             # Intervals
             self.heartbeat_interval = self.config.getint('intervals', 'heartbeat', fallback=60)
+            self.health_interval = self.config.getint('intervals', 'health', fallback=300)
             self.status_interval = self.config.getint('intervals', 'status', fallback=300)
             
             self.logger.info("Configuration loaded successfully")
@@ -585,27 +586,25 @@ class BMTLMQTTDaemon:
     def send_health_status(self):
         """Send detailed health status according to protocol spec"""
         try:
-            # Get real camera statistics
             camera_stats = self.get_camera_stats()
-            vinfo = get_version_for_mqtt()
+            storage = self.get_storage_metrics()
 
             payload = {
                 'module_id': f"bmotion{self.device_id}",
                 'status': 'online',
-                'battery_level': self.get_battery_level(),
-                'storage_used': self.get_storage_usage(),
+                'storage_total_gb': storage['total_gb'],
+                'storage_used_gb': storage['used_gb'],
+                'storage_available_gb': storage['free_gb'],
+                'storage_used_percent': storage['used_percent'],
                 'last_capture_time': camera_stats.get('last_successful_capture') or camera_stats.get('last_capture_time'),
                 'last_boot_time': self.get_boot_time(),
                 'site_name': self.device_sitename,
                 'today_total_captures': camera_stats.get('total_captures', 0),
                 'today_captured_count': camera_stats.get('successful_captures', 0),
                 'missed_captures': camera_stats.get('missed_captures', 0),
-                'sw_version': vinfo["sw_version"],
-                'commit_hash': vinfo["commit_hash"],
                 'timestamp': datetime.now().isoformat()
             }
 
-            # Use protocol spec topic format
             topic = f"bmtl/status/health/{self.device_id}"
             self.client.publish(topic, json.dumps(payload), qos=1)
             self.logger.info("Health status sent")
@@ -627,45 +626,6 @@ class BMTLMQTTDaemon:
                 'last_capture_time': None,
                 'last_successful_capture': None
             }
-
-    def get_battery_level(self):
-        """Get battery level for Raspberry Pi"""
-        try:
-            # Try to read from UPS HAT or similar (common paths)
-            battery_paths = [
-                '/sys/class/power_supply/BAT0/capacity',
-                '/sys/class/power_supply/BAT1/capacity',
-                '/sys/class/power_supply/rpi-poe-power-supply/capacity'
-            ]
-
-            for path in battery_paths:
-                try:
-                    with open(path, 'r') as f:
-                        battery_level = int(f.read().strip())
-                        return battery_level
-                except (FileNotFoundError, ValueError):
-                    continue
-
-            # Check for specific UPS HAT via I2C (if available)
-            try:
-                result = subprocess.run(['vcgencmd', 'get_throttled'],
-                                      capture_output=True, text=True, timeout=5)
-                if result.returncode == 0:
-                    # If system is not throttled, assume good power (simulated 85%)
-                    throttled = result.stdout.strip()
-                    if 'throttled=0x0' in throttled:
-                        return 85
-                    else:
-                        return 60  # Throttled, assume lower battery
-            except:
-                pass
-
-            # Default for devices without battery monitoring
-            return None
-
-        except Exception as e:
-            self.logger.error(f"Error getting battery level: {e}")
-            return None
 
     def clear_old_retained_messages(self):
         """Clear retained messages from old/incorrect device IDs"""
@@ -695,13 +655,11 @@ class BMTLMQTTDaemon:
     def send_heartbeat(self):
         """Send simple heartbeat - kept for backward compatibility"""
         try:
-            version_info = get_version_for_mqtt()
             payload = {
                 'device_id': self.device_id,
                 'timestamp': datetime.now().isoformat(),
                 'uptime': self.get_uptime(),
-                'sw_version': version_info["sw_version"],
-                'commit_hash': version_info["commit_hash"]
+                'status': 'online'
             }
 
             topic = f"{self.heartbeat_topic}/{self.device_id}"
@@ -710,14 +668,27 @@ class BMTLMQTTDaemon:
         except Exception as e:
             self.logger.error(f"Error sending heartbeat: {e}")
 
-    def get_storage_usage(self):
-        """Get storage usage percentage"""
+    def get_storage_metrics(self):
+        """Collect storage metrics for the root filesystem"""
         try:
             import shutil
             total, used, free = shutil.disk_usage("/")
-            return round((used / total) * 100, 1)
-        except:
-            return 0.0
+            to_gb = lambda value: round(value / (1024 ** 3), 2)
+            used_percent = round((used / total) * 100, 1) if total else 0.0
+            return {
+                'total_gb': to_gb(total),
+                'used_gb': to_gb(used),
+                'free_gb': to_gb(free),
+                'used_percent': used_percent
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting storage metrics: {e}")
+            return {
+                'total_gb': 0.0,
+                'used_gb': 0.0,
+                'free_gb': 0.0,
+                'used_percent': 0.0
+            }
 
     def get_boot_time(self):
         """Get system boot time"""
@@ -805,7 +776,7 @@ class BMTLMQTTDaemon:
                     last_heartbeat = current_time
 
                 # Send detailed health status (protocol spec)
-                if current_time - last_health >= self.heartbeat_interval:
+                if current_time - last_health >= self.health_interval:
                     self.send_health_status()
                     last_health = current_time
 
