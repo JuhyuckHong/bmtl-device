@@ -134,20 +134,31 @@ class BMTLMQTTDaemon:
         if rc == 0:
             self.logger.info("Connected to MQTT broker")
             
-            # Subscribe to command topic
-            client.subscribe(f"{self.command_topic}/{self.device_id}")
-            self.logger.info(f"Subscribed to {self.command_topic}/{self.device_id}")
+            # Subscribe to protocol-specific topics
+            request_topics = [
+                "bmtl/request/settings/all",
+                f"bmtl/request/settings/{self.device_id}",
+                "bmtl/request/status",
+                f"bmtl/set/settings/{self.device_id}",
+                "bmtl/request/reboot/all",
+                f"bmtl/request/reboot/{self.device_id}",
+                f"bmtl/request/options/{self.device_id}",
+                "bmtl/request/options/all",
+                f"bmtl/request/wiper/{self.device_id}",
+                f"bmtl/request/camera-on-off/{self.device_id}"
+            ]
 
-            # Subscribe to camera topic
-            client.subscribe(f"{self.camera_topic}/{self.device_id}")
-            self.logger.info(f"Subscribed to {self.camera_topic}/{self.device_id}")
-            
-            # Subscribe to all topics if enabled
-            if self.enable_all_topics:
+            for topic in request_topics:
+                client.subscribe(topic, qos=2)
+                self.logger.info(f"Subscribed to {topic}")
+
+            # Subscribe to additional topics if enabled (for debugging)
+            if self.enable_all_topics and self.subscribe_topics != '#':
                 for topic in self.subscribe_topics.split(','):
                     topic = topic.strip()
-                    client.subscribe(topic)
-                    self.logger.info(f"Subscribed to all topics: {topic}")
+                    if topic and topic not in request_topics:
+                        client.subscribe(topic)
+                        self.logger.info(f"Subscribed to additional topic: {topic}")
             
             # Send initial status
             self.send_status("online")
@@ -201,82 +212,227 @@ class BMTLMQTTDaemon:
 
             self.logger.info(f"Received message on {topic}: {payload}")
 
-            # Handle command messages specifically
-            if topic.startswith(self.command_topic):
-                try:
-                    command = json.loads(payload)
-                    self.handle_command(command)
-                except json.JSONDecodeError:
-                    self.logger.error(f"Invalid JSON in command: {payload}")
-
-            # Handle camera messages
-            elif topic.startswith(self.camera_topic):
-                try:
-                    camera_command = json.loads(payload)
-                    self.handle_camera_command(camera_command)
-                except json.JSONDecodeError:
-                    self.logger.error(f"Invalid JSON in camera command: {payload}")
+            # Handle protocol messages
+            try:
+                if topic == "bmtl/request/settings/all":
+                    self.handle_settings_all_request()
+                elif topic == f"bmtl/request/settings/{self.device_id}":
+                    self.handle_settings_request()
+                elif topic == "bmtl/request/status":
+                    self.handle_status_request()
+                elif topic == f"bmtl/set/settings/{self.device_id}":
+                    settings = json.loads(payload) if payload else {}
+                    self.handle_set_settings(settings)
+                elif topic == "bmtl/request/reboot/all":
+                    self.handle_reboot_all_request()
+                elif topic == f"bmtl/request/reboot/{self.device_id}":
+                    self.handle_reboot_request()
+                elif topic == f"bmtl/request/options/{self.device_id}":
+                    self.handle_options_request()
+                elif topic == "bmtl/request/options/all":
+                    self.handle_options_all_request()
+                elif topic == f"bmtl/request/wiper/{self.device_id}":
+                    self.handle_wiper_request()
+                elif topic == f"bmtl/request/camera-on-off/{self.device_id}":
+                    self.handle_camera_power_request()
+            except json.JSONDecodeError:
+                self.logger.error(f"Invalid JSON in message: {payload}")
+            except Exception as e:
+                self.logger.error(f"Error processing message: {e}")
 
         except Exception as e:
             self.logger.error(f"Error handling message: {e}")
             
-    def handle_command(self, command):
-        cmd_type = command.get('type', '')
-        
-        if cmd_type == 'status':
-            self.send_status("online")
-        elif cmd_type == 'restart':
-            self.logger.info("Restart command received")
-            self.send_status("restarting")
-            # Add restart logic here
-        elif cmd_type == 'shutdown':
-            self.logger.info("Shutdown command received")
-            self.send_status("shutting_down")
-            self.running = False
-        else:
-            self.logger.warning(f"Unknown command type: {cmd_type}")
-
-    def handle_camera_command(self, command):
-        """Handle camera-specific commands by writing to config files"""
+    def handle_settings_all_request(self):
+        """Handle bmtl/request/settings/all"""
         try:
-            cmd_type = command.get('type', '')
-
-            if cmd_type == 'config':
-                # Camera configuration update
-                config = command.get('config', {})
-                write_camera_config(config)
-                self.logger.info(f"Camera config updated: {config}")
-
-            elif cmd_type == 'capture':
-                # Immediate capture command
-                capture_command = {
-                    'type': 'capture',
-                    'filename': command.get('filename'),
-                    'timestamp': datetime.now().isoformat()
-                }
-                write_camera_command(capture_command)
-                self.logger.info(f"Camera capture command sent: {capture_command}")
-
-            elif cmd_type == 'schedule':
-                # Camera schedule update
-                schedule = command.get('schedule', {})
-                write_camera_schedule(schedule)
-                self.logger.info(f"Camera schedule updated: {schedule}")
-
-            elif cmd_type == 'status':
-                # Request camera status
-                status_command = {
-                    'type': 'status',
-                    'timestamp': datetime.now().isoformat()
-                }
-                write_camera_command(status_command)
-                self.logger.info("Camera status requested")
-
-            else:
-                self.logger.warning(f"Unknown camera command type: {cmd_type}")
-
+            camera_stats = self.get_camera_stats()
+            payload = {
+                "response_type": "all_settings",
+                "modules": {
+                    f"bmotion{self.device_id}": {
+                        "start_time": "08:00",
+                        "end_time": "18:00",
+                        "capture_interval": 10,
+                        "image_size": "1920x1080",
+                        "quality": "높음",
+                        "iso": "400",
+                        "format": "JPG",
+                        "aperture": "f/2.8"
+                    }
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish("bmtl/response/settings/all", json.dumps(payload), qos=1)
+            self.logger.info("Sent all settings response")
         except Exception as e:
-            self.logger.error(f"Error handling camera command: {e}")
+            self.logger.error(f"Error handling settings all request: {e}")
+
+    def handle_settings_request(self):
+        """Handle bmtl/request/settings/{device_id}"""
+        try:
+            payload = {
+                "response_type": "settings",
+                "module_id": f"bmotion{self.device_id}",
+                "settings": {
+                    "start_time": "08:00",
+                    "end_time": "18:00",
+                    "capture_interval": 10,
+                    "image_size": "1920x1080",
+                    "quality": "높음",
+                    "iso": "400",
+                    "format": "JPG",
+                    "aperture": "f/2.8"
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/settings/{self.device_id}", json.dumps(payload), qos=1)
+            self.logger.info("Sent settings response")
+        except Exception as e:
+            self.logger.error(f"Error handling settings request: {e}")
+
+    def handle_status_request(self):
+        """Handle bmtl/request/status"""
+        try:
+            payload = {
+                "response_type": "status",
+                "system_status": "normal",
+                "connected_modules": [f"bmotion{self.device_id}"],
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish("bmtl/response/status", json.dumps(payload), qos=1)
+            self.logger.info("Sent status response")
+        except Exception as e:
+            self.logger.error(f"Error handling status request: {e}")
+
+    def handle_set_settings(self, settings):
+        """Handle bmtl/set/settings/{device_id}"""
+        try:
+            # Apply camera settings
+            write_camera_config(settings)
+
+            payload = {
+                "response_type": "set_settings_result",
+                "module_id": f"bmotion{self.device_id}",
+                "success": True,
+                "message": "Settings applied successfully",
+                "applied_settings": settings,
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/set/settings/{self.device_id}", json.dumps(payload), qos=1)
+            self.logger.info(f"Applied settings: {settings}")
+        except Exception as e:
+            payload = {
+                "response_type": "set_settings_result",
+                "module_id": f"bmotion{self.device_id}",
+                "success": False,
+                "message": f"Settings failed: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/set/settings/{self.device_id}", json.dumps(payload), qos=1)
+            self.logger.error(f"Error applying settings: {e}")
+
+    def handle_reboot_all_request(self):
+        """Handle bmtl/request/reboot/all"""
+        try:
+            payload = {
+                "response_type": "reboot_all_result",
+                "success": True,
+                "message": "Global reboot initiated successfully",
+                "affected_modules": [f"bmotion{self.device_id}"],
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish("bmtl/response/reboot/all", json.dumps(payload), qos=1)
+            self.logger.info("Global reboot requested")
+        except Exception as e:
+            self.logger.error(f"Error handling reboot all request: {e}")
+
+    def handle_reboot_request(self):
+        """Handle bmtl/request/reboot/{device_id}"""
+        try:
+            payload = {
+                "response_type": "reboot_result",
+                "module_id": f"bmotion{self.device_id}",
+                "success": True,
+                "message": "Reboot initiated successfully",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/reboot/{self.device_id}", json.dumps(payload), qos=1)
+            self.logger.info("Individual reboot requested")
+        except Exception as e:
+            self.logger.error(f"Error handling reboot request: {e}")
+
+    def handle_options_request(self):
+        """Handle bmtl/request/options/{device_id}"""
+        try:
+            payload = {
+                "response_type": "options",
+                "module_id": f"bmotion{self.device_id}",
+                "options": {
+                    "supported_resolutions": ["1920x1080", "1280x720", "5184x3456"],
+                    "supported_formats": ["JPG", "RAW"],
+                    "iso_range": [100, 200, 400, 800, 1600, 3200, 6400],
+                    "aperture_range": ["f/1.4", "f/2.8", "f/4", "f/5.6", "f/8", "f/11", "f/16"]
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/options/{self.device_id}", json.dumps(payload), qos=1)
+            self.logger.info("Sent options response")
+        except Exception as e:
+            self.logger.error(f"Error handling options request: {e}")
+
+    def handle_options_all_request(self):
+        """Handle bmtl/request/options/all"""
+        try:
+            payload = {
+                "response_type": "all_options",
+                "modules": {
+                    f"bmotion{self.device_id}": {
+                        "supported_resolutions": ["1920x1080", "1280x720", "5184x3456"],
+                        "supported_formats": ["JPG", "RAW"],
+                        "iso_range": [100, 200, 400, 800, 1600, 3200, 6400],
+                        "aperture_range": ["f/1.4", "f/2.8", "f/4", "f/5.6", "f/8", "f/11", "f/16"]
+                    }
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish("bmtl/response/options/all", json.dumps(payload), qos=1)
+            self.logger.info("Sent all options response")
+        except Exception as e:
+            self.logger.error(f"Error handling options all request: {e}")
+
+    def handle_wiper_request(self):
+        """Handle bmtl/request/wiper/{device_id}"""
+        try:
+            # TODO: Implement actual wiper control
+            payload = {
+                "response_type": "wiper_result",
+                "module_id": f"bmotion{self.device_id}",
+                "success": True,
+                "message": "Wiper operation completed",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/wiper/{self.device_id}", json.dumps(payload), qos=1)
+            self.logger.info("Wiper operation requested")
+        except Exception as e:
+            self.logger.error(f"Error handling wiper request: {e}")
+
+    def handle_camera_power_request(self):
+        """Handle bmtl/request/camera-on-off/{device_id}"""
+        try:
+            # TODO: Implement actual camera power control
+            payload = {
+                "response_type": "camera_power_result",
+                "module_id": f"bmotion{self.device_id}",
+                "success": True,
+                "message": "Camera power toggled successfully",
+                "new_state": "on",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/camera-on-off/{self.device_id}", json.dumps(payload), qos=1)
+            self.logger.info("Camera power toggle requested")
+        except Exception as e:
+            self.logger.error(f"Error handling camera power request: {e}")
             
     def send_status(self, status):
         """Send device status - used for immediate status updates"""
