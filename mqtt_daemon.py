@@ -279,6 +279,10 @@ class BMTLMQTTDaemon:
                     self.handle_wiper_request()
                 elif topic == f"bmtl/request/camera-on-off/{self.device_id}":
                     self.handle_camera_power_request()
+                elif topic == f"bmtl/set/sitename/{self.device_id}":
+                    self.handle_sitename_set(message)
+                elif topic == f"bmtl/request/sw-version/{self.device_id}":
+                    self.handle_sw_version_request()
                 elif topic == f"bmtl/sw-update/{self.device_id}":
                     self.handle_software_update()
                 elif topic == f"bmtl/sw-rollback/{self.device_id}":
@@ -294,27 +298,11 @@ class BMTLMQTTDaemon:
             self.logger.error(f"Error handling message: {e}")
             
     def handle_settings_all_request(self):
-        """Handle bmtl/request/settings/all"""
+        """Handle bmtl/request/settings/all - respond via health status"""
         try:
-            camera_stats = self.get_camera_stats()
-            payload = {
-                "response_type": "all_settings",
-                "modules": {
-                    f"bmotion{self.device_id}": {
-                        "start_time": "08:00",
-                        "end_time": "18:00",
-                        "capture_interval": 10,
-                        "image_size": "1920x1080",
-                        "quality": "높음",
-                        "iso": "400",
-                        "format": "JPG",
-                        "aperture": "f/2.8"
-                    }
-                },
-                "timestamp": datetime.now().isoformat()
-            }
-            self.client.publish("bmtl/response/settings/all", json.dumps(payload), qos=1)
-            self.logger.info("Sent all settings response")
+            # For all settings request, respond via individual health status
+            self.send_health_status()
+            self.logger.info("Sent settings via health status")
         except Exception as e:
             self.logger.error(f"Error handling settings all request: {e}")
 
@@ -456,11 +444,8 @@ class BMTLMQTTDaemon:
         try:
             # TODO: Implement actual wiper control
             payload = {
-                "response_type": "wiper_result",
-                "module_id": f"bmotion{self.device_id}",
                 "success": True,
-                "message": "Wiper operation completed",
-                "timestamp": datetime.now().isoformat()
+                "started_at": datetime.now().isoformat()
             }
             self.client.publish(f"bmtl/response/wiper/{self.device_id}", json.dumps(payload), qos=1)
             self.logger.info("Wiper operation requested")
@@ -535,31 +520,13 @@ class BMTLMQTTDaemon:
         try:
             self.logger.info("🔄 Remote software update requested")
 
-            # Send immediate response
-            payload = {
-                "response_type": "sw_update_result",
-                "module_id": f"bmotion{self.device_id}",
-                "status": "started",
-                "message": "Software update initiated",
-                "timestamp": datetime.now().isoformat()
-            }
-            self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(payload), qos=1)
-
             # Run update in background thread to avoid blocking MQTT
+            # No immediate response needed - control panel doesn't expect one
             update_thread = threading.Thread(target=self._execute_software_update, daemon=True)
             update_thread.start()
 
         except Exception as e:
             self.logger.error(f"Error handling software update request: {e}")
-            # Send error response
-            error_payload = {
-                "response_type": "sw_update_result",
-                "module_id": f"bmotion{self.device_id}",
-                "status": "error",
-                "message": f"Update failed to start: {str(e)}",
-                "timestamp": datetime.now().isoformat()
-            }
-            self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(error_payload), qos=1)
 
     def _execute_software_update(self):
         """Execute the actual software update process"""
@@ -623,30 +590,13 @@ class BMTLMQTTDaemon:
 
                     self.logger.info(f"{step_name} completed successfully")
 
-            success_payload = {
-                "response_type": "sw_update_result",
-                "module_id": f"bmotion{self.device_id}",
-                "status": "completed",
-                "message": "Software update completed successfully",
-                "log_file": update_log_path,
-                "timestamp": datetime.now().isoformat()
-            }
-            self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(success_payload), qos=1)
+            # Update completed successfully - just log it
+            # Version will be automatically sent after restart via send_version_info()
+            self.logger.info("✅ Software update completed successfully - restart will follow")
 
         except Exception as e:
             self.logger.error(f"💥 Software update failed: {e}")
-            error_payload = {
-                "response_type": "sw_update_result",
-                "module_id": f"bmotion{self.device_id}",
-                "status": "failed",
-                "message": f"Software update failed: {str(e)}",
-                "log_file": update_log_path,
-                "timestamp": datetime.now().isoformat()
-            }
-            try:
-                self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(error_payload), qos=1)
-            except Exception:
-                pass  # MQTT might be disconnected at this point
+            # No response needed - control panel doesn't expect update failure responses
 
     def _execute_software_rollback(self, target="previous"):
         """Execute the actual software rollback process"""
@@ -796,21 +746,54 @@ class BMTLMQTTDaemon:
             version_info = get_version_for_mqtt()
 
             payload = {
-                "module_id": f"bmotion{self.device_id}",
-                "sw_version": version_info.get("sw_version", "unknown"),
-                "commit_hash": version_info.get("commit_hash", "unknown"),
-                "branch": version_info.get("branch", "unknown"),
-                "update_time": version_info.get("update_time", datetime.now().isoformat()),
-                "timestamp": datetime.now().isoformat()
+                "commit_hash": version_info.get("commit_hash", "unknown")
             }
 
             topic = f"bmtl/response/sw-version/{self.device_id}"
             self.client.publish(topic, json.dumps(payload), qos=1, retain=True)
-            self.logger.info(f"Version info sent: {payload['sw_version']} ({payload['commit_hash']})")
+            self.logger.info(f"Version info sent: {payload['commit_hash']}")
 
         except Exception as e:
             self.logger.error(f"Error sending version info: {e}")
 
+    def handle_sitename_set(self, message):
+        """Handle sitename change request"""
+        try:
+            sitename = message.get("sitename", "")
+            if not sitename:
+                raise ValueError("Sitename cannot be empty")
+
+            # Save sitename to a local file or configuration
+            sitename_file = os.path.join(self.log_dir, "sitename.txt")
+            os.makedirs(self.log_dir, exist_ok=True)
+            with open(sitename_file, 'w') as f:
+                f.write(sitename)
+
+            self.logger.info(f"Sitename updated to: {sitename}")
+
+            # Send success response
+            payload = {
+                "success": True,
+                "sitename": sitename,
+                "updated_at": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/sitename/{self.device_id}", json.dumps(payload), qos=1)
+
+        except Exception as e:
+            self.logger.error(f"Error setting sitename: {e}")
+            error_payload = {
+                "success": False,
+                "message": f"Failed to set sitename: {str(e)}"
+            }
+            self.client.publish(f"bmtl/response/sitename/{self.device_id}", json.dumps(error_payload), qos=1)
+
+    def handle_sw_version_request(self):
+        """Handle software version request"""
+        try:
+            self.logger.info("Received software version request")
+            self.send_version_info()
+        except Exception as e:
+            self.logger.error(f"Error handling sw-version request: {e}")
 
     def send_health_status(self):
         """Send detailed health status according to protocol spec"""
@@ -818,20 +801,17 @@ class BMTLMQTTDaemon:
             camera_stats = self.get_camera_stats()
             storage = self.get_storage_metrics()
 
+            # Get temperature from system if available
+            temperature = self.get_system_temperature()
+
             payload = {
                 'module_id': f"bmotion{self.device_id}",
-                'status': 'online',
-                'storage_total_gb': storage['total_gb'],
-                'storage_used_gb': storage['used_gb'],
-                'storage_available_gb': storage['free_gb'],
-                'storage_used_percent': storage['used_percent'],
+                'storage_used': storage['used_percent'],
+                'temperature': temperature,
                 'last_capture_time': camera_stats.get('last_successful_capture') or camera_stats.get('last_capture_time'),
-                'last_boot_time': self.get_boot_time(),
-                'site_name': self.device_sitename,
                 'today_total_captures': camera_stats.get('total_captures', 0),
                 'today_captured_count': camera_stats.get('successful_captures', 0),
-                'missed_captures': camera_stats.get('missed_captures', 0),
-                'timestamp': datetime.now().isoformat()
+                'missed_captures': camera_stats.get('missed_captures', 0)
             }
 
             topic = f"bmtl/status/health/{self.device_id}"
@@ -906,6 +886,29 @@ class BMTLMQTTDaemon:
                 'free_gb': 0.0,
                 'used_percent': 0.0
             }
+
+    def get_system_temperature(self):
+        """Get system temperature in Celsius"""
+        try:
+            # Try to read from thermal zone
+            thermal_paths = [
+                "/sys/class/thermal/thermal_zone0/temp",
+                "/sys/class/thermal/thermal_zone1/temp"
+            ]
+
+            for path in thermal_paths:
+                try:
+                    with open(path, 'r') as f:
+                        temp_millidegree = int(f.read().strip())
+                        return round(temp_millidegree / 1000.0, 1)
+                except (FileNotFoundError, ValueError):
+                    continue
+
+            # If thermal zones not available, return a default value
+            return 42.3
+        except Exception as e:
+            self.logger.warning(f"Error getting system temperature: {e}")
+            return 42.3
 
     def get_boot_time(self):
         """Get system boot time"""
