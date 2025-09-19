@@ -18,12 +18,13 @@ class VersionManager:
     def __init__(self, app_dir="/opt/bmtl-device"):
         self.app_dir = app_dir
         self.logger = logging.getLogger('VersionManager')
+        self.git_cmd = self._find_git_command()
 
     def get_git_version(self):
         """Get version information from git"""
         try:
             # If git is not available or directory is not a git repo, skip to fallback
-            if not shutil.which('git') or not os.path.isdir(os.path.join(self.app_dir, '.git')):
+            if not self.git_cmd or not os.path.isdir(os.path.join(self.app_dir, '.git')):
                 # No error in normal operation on devices without git
                 return self.get_fallback_version()
 
@@ -31,32 +32,32 @@ class VersionManager:
             os.chdir(self.app_dir)
 
             # Get git commit hash (short)
-            result = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
+            result = subprocess.run([self.git_cmd, 'rev-parse', '--short', 'HEAD'],
                                   capture_output=True, text=True, timeout=10)
             git_hash = result.stdout.strip() if result.returncode == 0 else "unknown"
 
             # Get git commit hash (full)
-            result = subprocess.run(['git', 'rev-parse', 'HEAD'],
+            result = subprocess.run([self.git_cmd, 'rev-parse', 'HEAD'],
                                   capture_output=True, text=True, timeout=10)
             git_hash_full = result.stdout.strip() if result.returncode == 0 else "unknown"
 
             # Get latest git tag
-            result = subprocess.run(['git', 'describe', '--tags', '--abbrev=0'],
+            result = subprocess.run([self.git_cmd, 'describe', '--tags', '--abbrev=0'],
                                   capture_output=True, text=True, timeout=10)
             git_tag = result.stdout.strip() if result.returncode == 0 else "no-tag"
 
             # Get git describe (tag + commits since tag + hash)
-            result = subprocess.run(['git', 'describe', '--tags', '--dirty'],
+            result = subprocess.run([self.git_cmd, 'describe', '--tags', '--dirty'],
                                   capture_output=True, text=True, timeout=10)
             git_describe = result.stdout.strip() if result.returncode == 0 else f"{git_tag}-{git_hash}"
 
             # Get commit date
-            result = subprocess.run(['git', 'log', '-1', '--format=%ci'],
+            result = subprocess.run([self.git_cmd, 'log', '-1', '--format=%ci'],
                                   capture_output=True, text=True, timeout=10)
             commit_date = result.stdout.strip() if result.returncode == 0 else "unknown"
 
             # Get branch name
-            result = subprocess.run(['git', 'branch', '--show-current'],
+            result = subprocess.run([self.git_cmd, 'branch', '--show-current'],
                                   capture_output=True, text=True, timeout=10)
             branch = result.stdout.strip() if result.returncode == 0 else "unknown"
 
@@ -75,6 +76,37 @@ class VersionManager:
         except Exception as e:
             self.logger.error(f"Error getting git version: {e}")
             return self.get_fallback_version()
+
+    def _find_git_command(self):
+        """Find git command in system PATH"""
+        try:
+            # Use shutil.which() for cross-platform compatibility and security
+            git_path = shutil.which('git')
+            if git_path:
+                # Verify git is working
+                try:
+                    result = subprocess.run([git_path, '--version'],
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        return git_path
+                except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    pass
+
+            # Fallback: try common git paths
+            git_paths = ['/usr/bin/git', '/usr/local/bin/git', '/bin/git']
+            for git_path in git_paths:
+                try:
+                    result = subprocess.run([git_path, '--version'],
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        return git_path
+                except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    continue
+
+            return None
+        except Exception as e:
+            self.logger.error(f"Error finding git command: {e}")
+            return None
 
     def get_fallback_version(self):
         """Get fallback version when git is not available"""

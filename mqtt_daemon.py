@@ -7,11 +7,11 @@ import time
 import signal
 import logging
 import configparser
-import os
 import ssl
 import socket
 import re
 import subprocess
+import shutil
 from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
@@ -484,6 +484,11 @@ class BMTLMQTTDaemon:
     def _execute_software_update(self):
         """Execute the actual software update process"""
         try:
+            # Check if git is available
+            git_cmd = self._find_git_command()
+            if not git_cmd:
+                raise Exception("Git is not installed or not found in PATH")
+
             app_dir = "/opt/bmtl-device"
 
             # Change to application directory
@@ -491,22 +496,26 @@ class BMTLMQTTDaemon:
             os.chdir(app_dir)
 
             self.logger.info("🔄 Starting git stash...")
-            result = subprocess.run(['git', 'stash'], capture_output=True, text=True, timeout=30)
+            result = subprocess.run([git_cmd, 'stash'], capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
                 self.logger.warning(f"Git stash warning: {result.stderr}")
 
             self.logger.info("🔄 Starting git pull...")
-            result = subprocess.run(['git', 'pull'], capture_output=True, text=True, timeout=60)
+            result = subprocess.run([git_cmd, 'pull'], capture_output=True, text=True, timeout=60)
             if result.returncode != 0:
                 raise Exception(f"Git pull failed: {result.stderr}")
 
+            # Find chmod command
+            chmod_cmd = shutil.which('chmod') or '/bin/chmod'
             self.logger.info("🔄 Setting install.sh permissions...")
-            result = subprocess.run(['chmod', '+x', './install.sh'], capture_output=True, text=True, timeout=10)
+            result = subprocess.run([chmod_cmd, '+x', './install.sh'], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 raise Exception(f"Chmod failed: {result.stderr}")
 
+            # Find sudo command
+            sudo_cmd = shutil.which('sudo') or '/usr/bin/sudo'
             self.logger.info("🔄 Running install.sh in update mode...")
-            result = subprocess.run(['sudo', './install.sh', 'update'], capture_output=True, text=True, timeout=300)
+            result = subprocess.run([sudo_cmd, './install.sh', 'update'], capture_output=True, text=True, timeout=300)
 
             # Restore original directory
             os.chdir(original_cwd)
@@ -544,6 +553,41 @@ class BMTLMQTTDaemon:
                 self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(error_payload), qos=1)
             except:
                 pass  # MQTT might be disconnected at this point
+
+    def _find_git_command(self):
+        """Find git command in system PATH"""
+        try:
+            import shutil
+
+            # Use shutil.which() for cross-platform compatibility and security
+            git_path = shutil.which('git')
+            if git_path:
+                # Verify git is working
+                try:
+                    result = subprocess.run([git_path, '--version'],
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        self.logger.info(f"Found git at: {git_path}")
+                        return git_path
+                except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    pass
+
+            # Fallback: try common git paths
+            git_paths = ['/usr/bin/git', '/usr/local/bin/git', '/bin/git']
+            for git_path in git_paths:
+                try:
+                    result = subprocess.run([git_path, '--version'],
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        self.logger.info(f"Found git at: {git_path}")
+                        return git_path
+                except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                    continue
+
+            return None
+        except Exception as e:
+            self.logger.error(f"Error finding git command: {e}")
+            return None
 
     def send_version_info(self):
         """Send software version information to server"""
