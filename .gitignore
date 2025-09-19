@@ -41,3 +41,6 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# YoYo AI version control directory
+.yoyo/
