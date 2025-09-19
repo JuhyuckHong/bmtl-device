@@ -600,16 +600,28 @@ class BMTLMQTTDaemon:
             update_log_path = os.path.join(self.log_dir, f"update_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
             # Run install.sh as detached process to survive service restart
-            # Use nohup to prevent termination when parent process dies
-            nohup_cmd = f"nohup {sudo_cmd} ./install.sh update > {update_log_path} 2>&1 &"
+            # Use Popen with detached process and output redirection
+            update_cmd = f"{sudo_cmd} ./install.sh update"
 
-            # Execute as shell command to allow nohup
-            result = subprocess.run(['/bin/bash', '-c', nohup_cmd],
-                                  capture_output=True, text=True, timeout=10)
+            try:
+                # Open log file for writing
+                with open(update_log_path, 'w') as log_file:
+                    # Start detached process with output redirection
+                    process = subprocess.Popen(
+                        ['/bin/bash', '-c', update_cmd],
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
+                        start_new_session=True
+                    )
+                    self.logger.info(f"Update process started with PID {process.pid}")
+            except Exception as e:
+                self.logger.error(f"Failed to start update process: {e}")
+                raise
 
-            self.logger.info(f"Update process launched with nohup, output will be logged to: {update_log_path}")
+            self.logger.info(f"Update process launched in background, output will be logged to: {update_log_path}")
 
-            # Since we're using nohup, we can't capture the install.sh output directly
+            # Since we're using detached process, we can't capture the install.sh output directly
             # The update will continue in background even if this process terminates
             success_payload = {
                 "response_type": "sw_update_result",
@@ -696,16 +708,28 @@ class BMTLMQTTDaemon:
             rollback_log_path = os.path.join(self.log_dir, f"rollback_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
             # Run install.sh as detached process to survive service restart
-            # Use nohup to prevent termination when parent process dies
-            nohup_cmd = f"nohup {sudo_cmd} ./install.sh update > {rollback_log_path} 2>&1 &"
+            # Use Popen with detached process and output redirection
+            rollback_cmd = f"{sudo_cmd} ./install.sh update"
 
-            # Execute as shell command to allow nohup
-            result = subprocess.run(['/bin/bash', '-c', nohup_cmd],
-                                  capture_output=True, text=True, timeout=10)
+            try:
+                # Open log file for writing
+                with open(rollback_log_path, 'w') as log_file:
+                    # Start detached process with output redirection
+                    process = subprocess.Popen(
+                        ['/bin/bash', '-c', rollback_cmd],
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
+                        start_new_session=True
+                    )
+                    self.logger.info(f"Rollback process started with PID {process.pid}")
+            except Exception as e:
+                self.logger.error(f"Failed to start rollback process: {e}")
+                raise
 
-            self.logger.info(f"Rollback process launched with nohup, output will be logged to: {rollback_log_path}")
+            self.logger.info(f"Rollback process launched in background, output will be logged to: {rollback_log_path}")
 
-            # Since we're using nohup, we can't capture the install.sh output directly
+            # Since we're using detached process, we can't capture the install.sh output directly
             # The rollback will continue in background even if this process terminates
             success_payload = {
                 "response_type": "sw_rollback_result",
