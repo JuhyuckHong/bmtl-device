@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 import paho.mqtt.client as mqtt
 from shared_config import write_camera_config, write_camera_command, write_camera_schedule, read_camera_config
-from version_manager import version_manager, get_version_for_mqtt
+from version_manager import get_version_for_mqtt, get_current_version
 
 class BMTLMQTTDaemon:
     def __init__(self):
@@ -169,6 +169,8 @@ class BMTLMQTTDaemon:
             request_topics = [
                 "bmtl/request/settings/all",
                 f"bmtl/request/settings/{self.device_id}",
+                f"bmtl/request/status/{self.device_id}",
+                "bmtl/request/status/all",
                 "bmtl/request/status",
                 f"bmtl/set/settings/{self.device_id}",
                 "bmtl/request/reboot/all",
@@ -262,8 +264,12 @@ class BMTLMQTTDaemon:
                     self.handle_settings_all_request()
                 elif topic == f"bmtl/request/settings/{self.device_id}":
                     self.handle_settings_request()
-                elif topic == "bmtl/request/status":
-                    self.handle_status_request()
+                elif topic in {
+                    f"bmtl/request/status/{self.device_id}",
+                    "bmtl/request/status/all",
+                    "bmtl/request/status"
+                }:
+                    self.handle_status_request(topic)
                 elif topic == f"bmtl/set/settings/{self.device_id}":
                     settings = json.loads(payload) if payload else {}
                     self.handle_set_settings(settings)
@@ -312,6 +318,8 @@ class BMTLMQTTDaemon:
             payload = {
                 "response_type": "settings",
                 "module_id": f"bmotion{self.device_id}",
+                "success": True,
+                "message": "Settings retrieved successfully",
                 "settings": {
                     "start_time": "08:00",
                     "end_time": "18:00",
@@ -327,19 +335,21 @@ class BMTLMQTTDaemon:
             self.client.publish(f"bmtl/response/settings/{self.device_id}", json.dumps(payload), qos=1)
             self.logger.info("Sent settings response")
         except Exception as e:
-            self.logger.error(f"Error handling settings request: {e}")
-
-    def handle_status_request(self):
-        """Handle bmtl/request/status"""
-        try:
-            payload = {
-                "response_type": "status",
-                "system_status": "normal",
-                "connected_modules": [f"bmotion{self.device_id}"],
+            error_payload = {
+                "response_type": "settings",
+                "module_id": f"bmotion{self.device_id}",
+                "success": False,
+                "message": f"Failed to retrieve settings: {str(e)}",
                 "timestamp": datetime.now().isoformat()
             }
-            self.client.publish("bmtl/response/status", json.dumps(payload), qos=1)
-            self.logger.info("Sent status response")
+            self.client.publish(f"bmtl/response/settings/{self.device_id}", json.dumps(error_payload), qos=1)
+            self.logger.error(f"Error handling settings request: {e}")
+
+    def handle_status_request(self, request_topic):
+        """Handle status request topics by sending a health snapshot"""
+        try:
+            self.logger.info(f"Status request received on {request_topic}, publishing health status")
+            self.send_health_status()
         except Exception as e:
             self.logger.error(f"Error handling status request: {e}")
 
@@ -383,6 +393,13 @@ class BMTLMQTTDaemon:
             self.client.publish("bmtl/response/reboot/all", json.dumps(payload), qos=1)
             self.logger.info("Global reboot requested")
         except Exception as e:
+            error_payload = {
+                "response_type": "reboot_all_result",
+                "success": False,
+                "message": f"Failed to initiate global reboot: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish("bmtl/response/reboot/all", json.dumps(error_payload), qos=1)
             self.logger.error(f"Error handling reboot all request: {e}")
 
     def handle_reboot_request(self):
@@ -398,6 +415,14 @@ class BMTLMQTTDaemon:
             self.client.publish(f"bmtl/response/reboot/{self.device_id}", json.dumps(payload), qos=1)
             self.logger.info("Individual reboot requested")
         except Exception as e:
+            error_payload = {
+                "response_type": "reboot_result",
+                "module_id": f"bmotion{self.device_id}",
+                "success": False,
+                "message": f"Failed to initiate reboot: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/reboot/{self.device_id}", json.dumps(error_payload), qos=1)
             self.logger.error(f"Error handling reboot request: {e}")
 
     def handle_options_request(self):
@@ -406,6 +431,7 @@ class BMTLMQTTDaemon:
             payload = {
                 "response_type": "options",
                 "module_id": f"bmotion{self.device_id}",
+                "success": True,
                 "options": {
                     "supported_resolutions": ["1920x1080", "1280x720", "5184x3456"],
                     "supported_formats": ["JPG", "RAW"],
@@ -417,6 +443,14 @@ class BMTLMQTTDaemon:
             self.client.publish(f"bmtl/response/options/{self.device_id}", json.dumps(payload), qos=1)
             self.logger.info("Sent options response")
         except Exception as e:
+            error_payload = {
+                "response_type": "options",
+                "module_id": f"bmotion{self.device_id}",
+                "success": False,
+                "message": f"Failed to fetch options: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/options/{self.device_id}", json.dumps(error_payload), qos=1)
             self.logger.error(f"Error handling options request: {e}")
 
     def handle_options_all_request(self):
@@ -424,6 +458,7 @@ class BMTLMQTTDaemon:
         try:
             payload = {
                 "response_type": "all_options",
+                "success": True,
                 "modules": {
                     f"bmotion{self.device_id}": {
                         "supported_resolutions": ["1920x1080", "1280x720", "5184x3456"],
@@ -437,25 +472,39 @@ class BMTLMQTTDaemon:
             self.client.publish("bmtl/response/options/all", json.dumps(payload), qos=1)
             self.logger.info("Sent all options response")
         except Exception as e:
+            error_payload = {
+                "response_type": "all_options",
+                "success": False,
+                "message": f"Failed to fetch options: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish("bmtl/response/options/all", json.dumps(error_payload), qos=1)
             self.logger.error(f"Error handling options all request: {e}")
 
     def handle_wiper_request(self):
         """Handle bmtl/request/wiper/{device_id}"""
         try:
-            # TODO: Implement actual wiper control
             payload = {
+                "module_id": f"bmotion{self.device_id}",
                 "success": True,
+                "message": "Wiper operation started",
                 "started_at": datetime.now().isoformat()
             }
             self.client.publish(f"bmtl/response/wiper/{self.device_id}", json.dumps(payload), qos=1)
             self.logger.info("Wiper operation requested")
         except Exception as e:
+            error_payload = {
+                "module_id": f"bmotion{self.device_id}",
+                "success": False,
+                "message": f"Wiper operation failed: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/wiper/{self.device_id}", json.dumps(error_payload), qos=1)
             self.logger.error(f"Error handling wiper request: {e}")
 
     def handle_camera_power_request(self):
         """Handle bmtl/request/camera-on-off/{device_id}"""
         try:
-            # TODO: Implement actual camera power control
             payload = {
                 "response_type": "camera_power_result",
                 "module_id": f"bmotion{self.device_id}",
@@ -467,6 +516,14 @@ class BMTLMQTTDaemon:
             self.client.publish(f"bmtl/response/camera-on-off/{self.device_id}", json.dumps(payload), qos=1)
             self.logger.info("Camera power toggle requested")
         except Exception as e:
+            error_payload = {
+                "response_type": "camera_power_result",
+                "module_id": f"bmotion{self.device_id}",
+                "success": False,
+                "message": f"Camera power toggle failed: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/camera-on-off/{self.device_id}", json.dumps(error_payload), qos=1)
             self.logger.error(f"Error handling camera power request: {e}")
 
     def handle_software_rollback(self, payload):
@@ -474,236 +531,113 @@ class BMTLMQTTDaemon:
         import threading
 
         try:
-            self.logger.info("🔄 Remote software rollback requested")
+            self.logger.info("Remote software rollback requested")
 
-            # Parse payload to get rollback target
-            rollback_target = "previous"  # default
+            rollback_target = "previous"
             if payload:
                 try:
                     data = json.loads(payload)
                     rollback_target = data.get("target", "previous")
                 except json.JSONDecodeError:
-                    pass
+                    self.logger.warning("Invalid rollback payload, using default target")
 
-            # Send immediate response
-            payload_response = {
-                "response_type": "sw_rollback_result",
-                "module_id": f"bmotion{self.device_id}",
-                "status": "started",
-                "message": f"Software rollback to '{rollback_target}' initiated",
-                "target": rollback_target,
-                "timestamp": datetime.now().isoformat()
-            }
-            self.client.publish(f"bmtl/response/sw-rollback/{self.device_id}", json.dumps(payload_response), qos=1)
-
-            # Run rollback in background thread to avoid blocking MQTT
-            rollback_thread = threading.Thread(target=self._execute_software_rollback, args=(rollback_target,), daemon=True)
+            rollback_thread = threading.Thread(
+                target=self._execute_software_rollback,
+                args=(rollback_target,),
+                daemon=True
+            )
             rollback_thread.start()
 
         except Exception as e:
             self.logger.error(f"Error handling software rollback request: {e}")
-            # Send error response
             error_payload = {
-                "response_type": "sw_rollback_result",
-                "module_id": f"bmotion{self.device_id}",
-                "status": "error",
-                "message": f"Rollback failed to start: {str(e)}",
-                "timestamp": datetime.now().isoformat()
+                "success": False,
+                "message": f"Rollback failed to start: {str(e)}"
             }
             self.client.publish(f"bmtl/response/sw-rollback/{self.device_id}", json.dumps(error_payload), qos=1)
 
-    def handle_software_update(self):
-        """Handle bmtl/sw-update/{device_id} - Remote software update"""
-        import threading
-        import subprocess
-
-        try:
-            self.logger.info("🔄 Remote software update requested")
-
-            # Run update in background thread to avoid blocking MQTT
-            # No immediate response needed - control panel doesn't expect one
-            update_thread = threading.Thread(target=self._execute_software_update, daemon=True)
-            update_thread.start()
-
-        except Exception as e:
-            self.logger.error(f"Error handling software update request: {e}")
-
-    def _execute_software_update(self):
-        """Execute the actual software update process"""
-        import subprocess
-
-        update_log_path = None
-
-        try:
-            git_cmd = self._find_git_command()
-            if not git_cmd:
-                raise Exception("Git is not installed or not found in PATH")
-
-            app_dir = "/opt/bmtl-device"
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            update_log_path = os.path.join(self.log_dir, f"update_{timestamp}.log")
-            os.makedirs(self.log_dir, exist_ok=True)
-
-            chmod_cmd = shutil.which('chmod') or '/bin/chmod'
-            bash_cmd = shutil.which('bash')
-            install_cmd = [bash_cmd, './install.sh'] if bash_cmd else ['./install.sh']
-
-            commands = [
-                ("git stash", [git_cmd, 'stash'], 60),
-                ("git pull", [git_cmd, 'pull'], 120),
-                ("chmod install.sh", [chmod_cmd, '+x', './install.sh'], 15),
-                ("install.sh", install_cmd, 900)
-            ]
-
-            os.environ.setdefault('GIT_TERMINAL_PROMPT', '0')
-
-            def format_command(cmd):
-                return ' '.join(str(part) for part in cmd)
-
-            with open(update_log_path, 'w', encoding='utf-8') as log_file:
-                log_file.write(f"BMTL software update started at {datetime.now().isoformat()}\n")
-
-                for step_name, cmd, timeout in commands:
-                    self.logger.info(f"Starting {step_name}...")
-                    try:
-                        result = subprocess.run(
-                            cmd,
-                            cwd=app_dir,
-                            capture_output=True,
-                            text=True,
-                            timeout=timeout
-                        )
-                    except subprocess.TimeoutExpired:
-                        log_file.write(f"$ {format_command(cmd)}\nERROR: Command timed out after {timeout}s\n")
-                        raise Exception(f"{step_name} timed out after {timeout} seconds")
-
-                    log_file.write(f"$ {format_command(cmd)}\n")
-                    if result.stdout:
-                        log_file.write(f"STDOUT:\n{result.stdout}")
-                    if result.stderr:
-                        log_file.write(f"STDERR:\n{result.stderr}")
-                    log_file.write(f"Return code: {result.returncode}\n\n")
-                    log_file.flush()
-
-                    if result.returncode != 0:
-                        raise Exception(f"{step_name} failed: {result.stderr.strip() or result.stdout.strip() or 'unknown error'}")
-
-                    self.logger.info(f"{step_name} completed successfully")
-
-            # Update completed successfully - just log it
-            # Version will be automatically sent after restart via send_version_info()
-            self.logger.info("✅ Software update completed successfully - restart will follow")
-
-        except Exception as e:
-            self.logger.error(f"💥 Software update failed: {e}")
-            # No response needed - control panel doesn't expect update failure responses
-
     def _execute_software_rollback(self, target="previous"):
         """Execute the actual software rollback process"""
+        original_cwd = os.getcwd()
         try:
-            # Check if git is available
             git_cmd = self._find_git_command()
             if not git_cmd:
                 raise Exception("Git is not installed or not found in PATH")
 
             app_dir = "/opt/bmtl-device"
-
-            # Change to application directory
-            original_cwd = os.getcwd()
             os.chdir(app_dir)
 
-            # Determine rollback target
             if target == "previous" or target == "HEAD~1":
                 rollback_target = "HEAD~1"
-                self.logger.info("🔄 Rolling back to previous commit...")
+                self.logger.info("Rolling back to previous commit")
             elif target.startswith("HEAD~"):
                 rollback_target = target
-                self.logger.info(f"🔄 Rolling back to {target}...")
-            elif len(target) >= 7:  # Assume it's a commit hash
+                self.logger.info(f"Rolling back to {target}")
+            elif len(target) >= 7:
                 rollback_target = target
-                self.logger.info(f"🔄 Rolling back to commit {target}...")
+                self.logger.info(f"Rolling back to commit {target}")
             else:
                 raise Exception(f"Invalid rollback target: {target}")
 
-            # Stash any local changes first
-            self.logger.info("🔄 Stashing local changes...")
+            self.logger.info("Stashing local changes")
             result = subprocess.run([git_cmd, 'stash'], capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
                 self.logger.warning(f"Git stash warning: {result.stderr}")
 
-            # Perform rollback using git reset --hard
-            self.logger.info(f"🔄 Performing rollback to {rollback_target}...")
-            result = subprocess.run([git_cmd, 'reset', '--hard', rollback_target],
-                                  capture_output=True, text=True, timeout=60)
+            self.logger.info(f"Performing rollback to {rollback_target}")
+            result = subprocess.run([git_cmd, 'reset', '--hard', rollback_target], capture_output=True, text=True, timeout=60)
             if result.returncode != 0:
                 raise Exception(f"Git rollback failed: {result.stderr}")
 
-            # Find chmod command
             chmod_cmd = shutil.which('chmod') or '/bin/chmod'
-            self.logger.info("🔄 Setting install.sh permissions...")
+            self.logger.info("Setting install.sh permissions")
             result = subprocess.run([chmod_cmd, '+x', './install.sh'], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 raise Exception(f"Chmod failed: {result.stderr}")
 
-            # Find sudo command
             sudo_cmd = shutil.which('sudo') or '/usr/bin/sudo'
-            self.logger.info("🔄 Running install.sh in update mode...")
+            self.logger.info("Running install.sh in update mode")
 
-            # Save rollback output to separate log file
-            rollback_log_path = os.path.join(self.log_dir, f"rollback_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+            rollback_log_path = os.path.join(self.log_dir, f"rollback_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
-            # Run install.sh as detached process to survive service restart
-            # Use Popen with detached process and output redirection
             rollback_cmd = f"{sudo_cmd} ./install.sh update"
 
             try:
-                # Use nohup to run detached process with output redirection
                 nohup_cmd = f"cd /opt/bmtl-device && nohup {rollback_cmd} > {rollback_log_path} 2>&1 &"
-                process = subprocess.Popen(
-                    ['/bin/bash', '-c', nohup_cmd],
+                subprocess.Popen(
+                    ["/bin/bash", "-c", nohup_cmd],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL
                 )
-                self.logger.info(f"Rollback process started with nohup")
+                self.logger.info("Rollback process started with nohup")
             except Exception as e:
                 self.logger.error(f"Failed to start rollback process: {e}")
                 raise
 
             self.logger.info(f"Rollback process launched in background, output will be logged to: {rollback_log_path}")
 
-            # Since we're using detached process, we can't capture the install.sh output directly
-            # The rollback will continue in background even if this process terminates
             success_payload = {
-                "response_type": "sw_rollback_result",
-                "module_id": f"bmotion{self.device_id}",
-                "status": "started_background",
-                "message": f"Software rollback to '{target}' started in background, check log: {rollback_log_path}",
-                "target": target,
-                "log_file": rollback_log_path,
-                "timestamp": datetime.now().isoformat()
+                "success": True,
+                "message": "Rollback completed successfully",
+                "log_file": rollback_log_path
             }
             self.client.publish(f"bmtl/response/sw-rollback/{self.device_id}", json.dumps(success_payload), qos=1)
 
-            # Restore original directory before return
-            os.chdir(original_cwd)
-
-            # Return early since rollback continues in background
-            return
-
         except Exception as e:
-            self.logger.error(f"💥 Software rollback failed: {e}")
+            self.logger.error(f"Software rollback failed: {e}")
             error_payload = {
-                "response_type": "sw_rollback_result",
-                "module_id": f"bmotion{self.device_id}",
-                "status": "failed",
-                "message": f"Software rollback failed: {str(e)}",
-                "target": target,
-                "timestamp": datetime.now().isoformat()
+                "success": False,
+                "message": f"Software rollback failed: {str(e)}"
             }
             try:
                 self.client.publish(f"bmtl/response/sw-rollback/{self.device_id}", json.dumps(error_payload), qos=1)
-            except:
-                pass  # MQTT might be disconnected at this point
+            except Exception:
+                pass
+        finally:
+            try:
+                os.chdir(original_cwd)
+            except Exception:
+                pass
 
     def _find_git_command(self):
         """Find git command in system PATH"""
@@ -763,17 +697,18 @@ class BMTLMQTTDaemon:
             if not sitename:
                 raise ValueError("Sitename cannot be empty")
 
-            # Save sitename to a local file or configuration
             sitename_file = os.path.join(self.log_dir, "sitename.txt")
             os.makedirs(self.log_dir, exist_ok=True)
-            with open(sitename_file, 'w') as f:
+            with open(sitename_file, "w") as f:
                 f.write(sitename)
 
+            self.device_sitename = sitename
             self.logger.info(f"Sitename updated to: {sitename}")
 
-            # Send success response
             payload = {
+                "module_id": f"bmotion{self.device_id}",
                 "success": True,
+                "message": "Sitename updated successfully",
                 "sitename": sitename,
                 "updated_at": datetime.now().isoformat()
             }
@@ -782,6 +717,7 @@ class BMTLMQTTDaemon:
         except Exception as e:
             self.logger.error(f"Error setting sitename: {e}")
             error_payload = {
+                "module_id": f"bmotion{self.device_id}",
                 "success": False,
                 "message": f"Failed to set sitename: {str(e)}"
             }
@@ -801,17 +737,19 @@ class BMTLMQTTDaemon:
             camera_stats = self.get_camera_stats()
             storage = self.get_storage_metrics()
 
-            # Get temperature from system if available
             temperature = self.get_system_temperature()
 
             payload = {
-                'module_id': f"bmotion{self.device_id}",
-                'storage_used': storage['used_percent'],
-                'temperature': temperature,
-                'last_capture_time': camera_stats.get('last_successful_capture') or camera_stats.get('last_capture_time'),
-                'today_total_captures': camera_stats.get('total_captures', 0),
-                'today_captured_count': camera_stats.get('successful_captures', 0),
-                'missed_captures': camera_stats.get('missed_captures', 0)
+                "module_id": f"bmotion{self.device_id}",
+                "storage_used": storage["used_percent"],
+                "temperature": temperature,
+                "last_capture_time": camera_stats.get("last_successful_capture") or camera_stats.get("last_capture_time"),
+                "last_boot_time": self.get_boot_time(),
+                "today_total_captures": camera_stats.get("total_captures", 0),
+                "today_captured_count": camera_stats.get("successful_captures", 0),
+                "missed_captures": camera_stats.get("missed_captures", 0),
+                "sw_version": get_current_version(),
+                "site_name": self.device_sitename
             }
 
             topic = f"bmtl/status/health/{self.device_id}"

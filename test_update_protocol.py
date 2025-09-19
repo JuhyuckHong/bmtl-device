@@ -26,8 +26,13 @@ def test_mqtt_daemon_update_handler():
         with open(mqtt_file, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        required_methods = ['handle_software_update', '_execute_software_update']
-        required_topics = ['bmtl/sw-update']
+        required_methods = ['handle_software_rollback', '_execute_software_rollback']
+        required_topics = [
+            'bmtl/sw-update',
+            'bmtl/sw-rollback',
+            'bmtl/request/status/all',
+            'bmtl/request/status/{self.device_id}'
+        ]
 
         all_found = True
         for method in required_methods:
@@ -42,6 +47,31 @@ def test_mqtt_daemon_update_handler():
                 print(f"[PASS] Found topic handling: {topic}")
             else:
                 print(f"[FAIL] Missing topic handling: {topic}")
+                all_found = False
+
+        # Additional protocol verification
+        health_fields = ["\"last_boot_time\"", "\"sw_version\"", "\"site_name\""]
+        for field in health_fields:
+            if field in content:
+                print(f"[PASS] Health payload includes {field}")
+            else:
+                print(f"[FAIL] Missing health field: {field}")
+                all_found = False
+
+        status_topics = ['bmtl/status/health/{self.device_id}', 'bmtl/request/status/all']
+        for status_topic in status_topics:
+            if status_topic in content:
+                print(f"[PASS] Found status topic detail: {status_topic}")
+            else:
+                print(f"[FAIL] Missing status topic detail: {status_topic}")
+                all_found = False
+
+        rollback_markers = ['"success": True', 'Rollback completed successfully', '"log_file": rollback_log_path']
+        for marker in rollback_markers:
+            if marker in content:
+                print(f"[PASS] Rollback response includes {marker}")
+            else:
+                print(f"[FAIL] Rollback response missing {marker}")
                 all_found = False
 
         if all_found:

@@ -74,6 +74,7 @@ def test_mqtt_integration():
         version_features = [
             'from version_manager import',
             'get_version_for_mqtt',
+            'get_current_version',
             'send_version_info',
             'sw_version',
             'commit_hash'
