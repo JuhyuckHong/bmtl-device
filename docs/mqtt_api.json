@@ -1,0 +1,335 @@
+{
+  "mqtt_api_documentation": {
+    "version": "1.0",
+    "description": "BMTL Device MQTT API Documentation",
+    "device_id_format": "디바이스 ID는 01, 02 등의 2자리 숫자 형태",
+
+    "subscribed_topics": {
+      "description": "디바이스가 구독하는 토픽들 (서버→디바이스)",
+      "topics": [
+        {
+          "topic": "bmtl/request/settings/all",
+          "description": "전체 설정 요청",
+          "payload": {},
+          "response_topic": "bmtl/response/settings/all"
+        },
+        {
+          "topic": "bmtl/request/settings/{device_id}",
+          "description": "개별 설정 요청",
+          "payload": {},
+          "response_topic": "bmtl/response/settings/{device_id}"
+        },
+        {
+          "topic": "bmtl/request/status/all",
+          "description": "전체 상태 요청",
+          "payload": {},
+          "response_topic": "bmtl/response/status"
+        },
+        {
+          "topic": "bmtl/request/status/{device_id}",
+          "description": "개별 상태 요청",
+          "payload": {},
+          "response_topic": "bmtl/response/status/{device_id}"
+        },
+        {
+          "topic": "bmtl/set/settings/{device_id}",
+          "description": "설정 변경",
+          "payload": {
+            "example": {
+              "iso": "100",
+              "shutter_speed": "1/60",
+              "aperture": "f/2.8"
+            }
+          },
+          "response_topic": "bmtl/response/set/settings/{device_id}"
+        },
+        {
+          "topic": "bmtl/set/sitename/{device_id}",
+          "description": "현장 이름 변경",
+          "payload": {
+            "site_name": "새로운 현장명"
+          },
+          "response_topic": "bmtl/response/set/sitename/{device_id}"
+        },
+        {
+          "topic": "bmtl/sw-update/{device_id}",
+          "description": "소프트웨어 업데이트",
+          "payload": {},
+          "response_topic": "bmtl/response/sw-update/{device_id}"
+        },
+        {
+          "topic": "bmtl/sw-rollback/{device_id}",
+          "description": "소프트웨어 롤백",
+          "payload": {},
+          "response_topic": "bmtl/response/sw-rollback/{device_id}"
+        },
+        {
+          "topic": "bmtl/request/reboot/all",
+          "description": "전체 재부팅",
+          "payload": {},
+          "response_topic": "bmtl/response/reboot/all"
+        },
+        {
+          "topic": "bmtl/request/reboot/{device_id}",
+          "description": "개별 재부팅",
+          "payload": {},
+          "response_topic": "bmtl/response/reboot/{device_id}"
+        },
+        {
+          "topic": "bmtl/request/options/{device_id}",
+          "description": "개별 옵션 요청",
+          "payload": {},
+          "response_topic": "bmtl/response/options/{device_id}"
+        },
+        {
+          "topic": "bmtl/request/options/all",
+          "description": "전체 옵션 요청",
+          "payload": {},
+          "response_topic": "bmtl/response/options/all"
+        },
+        {
+          "topic": "bmtl/request/wiper/{device_id}",
+          "description": "와이퍼 동작",
+          "payload": {},
+          "response_topic": "bmtl/response/wiper/{device_id}"
+        },
+        {
+          "topic": "bmtl/request/camera-on-off/{device_id}",
+          "description": "카메라 전원 제어",
+          "payload": {},
+          "response_topic": "bmtl/response/camera-on-off/{device_id}"
+        },
+        {
+          "topic": "bmtl/request/sw-version/{device_id}",
+          "description": "소프트웨어 버전 요청",
+          "payload": {},
+          "response_topic": "bmtl/response/sw-version/{device_id}"
+        }
+      ]
+    },
+
+    "published_topics": {
+      "description": "디바이스가 발행하는 토픽들 (디바이스→서버)",
+
+      "periodic_publications": [
+        {
+          "topic": "bmtl/status/health/{device_id}",
+          "description": "헬스 상태 주기적 전송 (60초마다)",
+          "qos": 1,
+          "payload": {
+            "module_id": "bmotion01",
+            "status": "online",
+            "battery_level": 85,
+            "storage_used": 1234.56,
+            "last_capture_time": "2024-01-01T12:00:00.000Z",
+            "last_boot_time": "2024-01-01T10:00:00.000Z",
+            "site_name": "현장명",
+            "today_total_captures": 100,
+            "today_captured_count": 75,
+            "missed_captures": 3,
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        }
+      ],
+
+      "response_publications": [
+        {
+          "topic": "bmtl/response/settings/all",
+          "description": "전체 설정 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "all_settings",
+            "modules": {
+              "bmotion01": {
+                "iso": "100",
+                "shutter_speed": "1/60",
+                "aperture": "f/2.8"
+              }
+            },
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/settings/{device_id}",
+          "description": "개별 설정 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "settings",
+            "module_id": "bmotion01",
+            "settings": {
+              "iso": "100",
+              "shutter_speed": "1/60",
+              "aperture": "f/2.8"
+            },
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/status",
+          "description": "전체 상태 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "status",
+            "system_status": "normal",
+            "connected_modules": ["bmotion01"],
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/set/settings/{device_id}",
+          "description": "설정 변경 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "set_settings_result",
+            "module_id": "bmotion01",
+            "success": true,
+            "message": "Settings applied successfully",
+            "applied_settings": {
+              "iso": "100"
+            },
+            "errors": [],
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/set/sitename/{device_id}",
+          "description": "현장 이름 변경 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "set_sitename_result",
+            "module_id": "bmotion01",
+            "success": true,
+            "message": "Site name updated to '새로운현장명'. Daemon will restart to apply changes.",
+            "new_sitename": "새로운현장명",
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/sw-update/{device_id}",
+          "description": "소프트웨어 업데이트 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "sw_update_result",
+            "module_id": "bmotion01",
+            "success": true,
+            "message": "Software update initiated. System will restart after update.",
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/sw-rollback/{device_id}",
+          "description": "소프트웨어 롤백 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "sw_rollback_result",
+            "module_id": "bmotion01",
+            "success": false,
+            "message": "Software rollback feature is not implemented yet",
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/reboot/all",
+          "description": "전체 재부팅 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "reboot_all_result",
+            "success": true,
+            "message": "Global reboot initiated successfully",
+            "affected_modules": ["bmotion01"],
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/reboot/{device_id}",
+          "description": "개별 재부팅 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "reboot_result",
+            "module_id": "bmotion01",
+            "success": true,
+            "message": "Reboot initiated successfully",
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/options/{device_id}",
+          "description": "개별 옵션 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "options",
+            "module_id": "bmotion01",
+            "options": {
+              "iso": ["100", "200", "400", "800"],
+              "shutter_speed": ["1/30", "1/60", "1/125"],
+              "aperture": ["f/2.8", "f/4", "f/5.6"]
+            },
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/options/all",
+          "description": "전체 옵션 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "all_options",
+            "modules": {
+              "bmotion01": {
+                "iso": ["100", "200", "400", "800"],
+                "shutter_speed": ["1/30", "1/60", "1/125"],
+                "aperture": ["f/2.8", "f/4", "f/5.6"]
+              }
+            },
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/wiper/{device_id}",
+          "description": "와이퍼 동작 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "wiper_result",
+            "module_id": "bmotion01",
+            "success": true,
+            "message": "Wiper operation completed",
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/camera-on-off/{device_id}",
+          "description": "카메라 전원 제어 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "camera_power_result",
+            "module_id": "bmotion01",
+            "success": true,
+            "message": "Camera power toggled successfully",
+            "new_state": "on",
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        },
+        {
+          "topic": "bmtl/response/sw-version/{device_id}",
+          "description": "소프트웨어 버전 응답",
+          "qos": 1,
+          "payload": {
+            "response_type": "sw_version_result",
+            "module_id": "bmotion01",
+            "success": true,
+            "commit_hash": "abc123def456",
+            "timestamp": "2024-01-01T12:00:00.000Z"
+          }
+        }
+      ]
+    },
+
+    "notes": {
+      "qos_levels": "모든 요청/응답은 QoS 2, 헬스 상태는 QoS 1 사용",
+      "device_id_format": "디바이스 ID는 01, 02와 같은 2자리 숫자",
+      "timestamps": "모든 타임스탬프는 ISO 8601 형식 사용",
+      "health_interval": "헬스 상태는 60초마다 자동 전송",
+      "software_update": "SW 업데이트 시 git pull 및 install.sh 실행 후 데몬 종료됨",
+      "sitename_change": "현장 이름 변경 시 config.ini 업데이트 후 데몬 재시작됨"
+    }
+  }
+}
