@@ -35,10 +35,20 @@
           "topic": "bmtl/set/settings/{device_id}",
           "description": "설정 변경",
           "payload": {
-            "example": {
+            "camera_settings": {
               "iso": "100",
               "shutter_speed": "1/60",
               "aperture": "f/2.8"
+            },
+            "schedule_settings": {
+              "startTime": "08:00",
+              "endTime": "18:00",
+              "captureInterval": "10"
+            },
+            "image_settings": {
+              "imageSize": "1920x1080",
+              "quality": "85",
+              "format": "jpeg"
             }
           },
           "response_topic": "bmtl/response/set/settings/{device_id}"
@@ -120,13 +130,15 @@
             "module_id": "bmotion01",
             "status": "online",
             "battery_level": 85,
-            "storage_used": 1234.56,
+            "storage_used": 45.2,
+            "temperature": 24.7,
             "last_capture_time": "2024-01-01T12:00:00.000Z",
             "last_boot_time": "2024-01-01T10:00:00.000Z",
             "site_name": "현장명",
             "today_total_captures": 100,
             "today_captured_count": 75,
             "missed_captures": 3,
+            "sw_version": "abc123def456",
             "timestamp": "2024-01-01T12:00:00.000Z"
           }
         }
@@ -142,8 +154,14 @@
             "modules": {
               "bmotion01": {
                 "iso": "100",
+                "aperture": "f/2.8",
                 "shutter_speed": "1/60",
-                "aperture": "f/2.8"
+                "startTime": "08:00",
+                "endTime": "18:00",
+                "captureInterval": "10",
+                "imageSize": "1920x1080",
+                "quality": "85",
+                "format": "jpeg"
               }
             },
             "timestamp": "2024-01-01T12:00:00.000Z"
@@ -158,8 +176,14 @@
             "module_id": "bmotion01",
             "settings": {
               "iso": "100",
+              "aperture": "f/2.8",
               "shutter_speed": "1/60",
-              "aperture": "f/2.8"
+              "startTime": "08:00",
+              "endTime": "18:00",
+              "captureInterval": "10",
+              "imageSize": "1920x1080",
+              "quality": "85",
+              "format": "jpeg"
             },
             "timestamp": "2024-01-01T12:00:00.000Z"
           }
@@ -329,7 +353,11 @@
       "timestamps": "모든 타임스탬프는 ISO 8601 형식 사용",
       "health_interval": "헬스 상태는 60초마다 자동 전송",
       "software_update": "SW 업데이트 시 git pull 및 install.sh 실행 후 데몬 종료됨",
-      "sitename_change": "현장 이름 변경 시 config.ini 업데이트 후 데몬 재시작됨"
+      "sitename_change": "현장 이름 변경 시 config.ini 업데이트 후 데몬 재시작됨",
+      "sw_version": "SW 버전은 Git 커밋 해시의 앞 12자리로 표시됨",
+      "storage_used": "저장 공간 사용률은 백분율(%)로 표시됨",
+      "temperature": "온도는 섭씨(°C) 단위로 표시됨",
+      "enhanced_settings": "설정은 카메라, 스케줄, 이미지 설정으로 분류되어 처리됨"
     }
   }
 }
