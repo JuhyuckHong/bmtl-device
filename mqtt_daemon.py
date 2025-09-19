@@ -112,8 +112,6 @@ class BMTLMQTTDaemon:
             self.device_sitename = self.config.get('device', 'sitename', fallback=socket.gethostname())
             
             # Topics
-            self.status_topic = self.config.get('topics', 'status', fallback='bmtl/device/status')
-            self.heartbeat_topic = self.config.get('topics', 'heartbeat', fallback='bmtl/device/heartbeat')
             self.command_topic = self.config.get('topics', 'command', fallback='bmtl/device/command')
             self.camera_topic = self.config.get('topics', 'camera', fallback='bmtl/device/camera')
             self.subscribe_topics = self.config.get('topics', 'subscribe', fallback='#')
@@ -123,9 +121,7 @@ class BMTLMQTTDaemon:
             self.log_all_messages = self.config.getboolean('subscription', 'log_all_messages', fallback=True)
             
             # Intervals
-            self.heartbeat_interval = self.config.getint('intervals', 'heartbeat', fallback=60)
             self.health_interval = self.config.getint('intervals', 'health', fallback=300)
-            self.status_interval = self.config.getint('intervals', 'status', fallback=300)
             
             self.logger.info("Configuration loaded successfully")
             
@@ -149,7 +145,8 @@ class BMTLMQTTDaemon:
                 "bmtl/request/options/all",
                 f"bmtl/request/wiper/{self.device_id}",
                 f"bmtl/request/camera-on-off/{self.device_id}",
-                f"bmtl/sw-update/{self.device_id}"
+                f"bmtl/sw-update/{self.device_id}",
+                "bmtl/response/settings/all"
             ]
 
             for topic in request_topics:
@@ -164,9 +161,6 @@ class BMTLMQTTDaemon:
                         client.subscribe(topic)
                         self.logger.info(f"Subscribed to additional topic: {topic}")
             
-            # Send initial status
-            self.send_status("online")
-
             # Send initial health status (protocol spec)
             self.send_health_status()
 
@@ -201,10 +195,8 @@ class BMTLMQTTDaemon:
 
             # Skip messages from our own device to avoid echo
             if (topic.endswith(f"/{self.device_id}") and
-                (topic.startswith(self.status_topic) or
-                 topic.startswith(self.heartbeat_topic) or
-                 topic.startswith("bmtl/status/health"))):
-                return  # Don't process our own status/health messages
+                topic.startswith("bmtl/status/health")):
+                return  # Don't process our own health messages
 
             # Log all messages to separate file if enabled (except our own)
             if self.log_all_messages:
@@ -244,6 +236,8 @@ class BMTLMQTTDaemon:
                     self.handle_camera_power_request()
                 elif topic == f"bmtl/sw-update/{self.device_id}":
                     self.handle_software_update()
+                elif topic == "bmtl/response/settings/all":
+                    self.handle_response_settings_all_request()
             except json.JSONDecodeError:
                 # sw-update doesn't require JSON, so only log for other topics
                 if not topic.startswith("bmtl/sw-update"):
@@ -445,6 +439,14 @@ class BMTLMQTTDaemon:
         except Exception as e:
             self.logger.error(f"Error handling camera power request: {e}")
 
+    def handle_response_settings_all_request(self):
+        """Handle bmtl/response/settings/all - Send health status"""
+        try:
+            self.logger.info("Received bmtl/response/settings/all request, sending health status")
+            self.send_health_status()
+        except Exception as e:
+            self.logger.error(f"Error handling response settings all request: {e}")
+
     def handle_software_update(self):
         """Handle bmtl/sw-update/{device_id} - Remote software update"""
         import threading
@@ -565,23 +567,6 @@ class BMTLMQTTDaemon:
         except Exception as e:
             self.logger.error(f"Error sending version info: {e}")
 
-    def send_status(self, status):
-        """Send device status - used for immediate status updates"""
-        try:
-            payload = {
-                'device_id': self.device_id,
-                'sitename': self.device_sitename,
-                'status': status,
-                'timestamp': datetime.now().isoformat(),
-                'uptime': self.get_uptime()
-            }
-
-            topic = f"{self.status_topic}/{self.device_id}"
-            self.client.publish(topic, json.dumps(payload), retain=True)
-            self.logger.info(f"Status sent: {status}")
-
-        except Exception as e:
-            self.logger.error(f"Error sending status: {e}")
 
     def send_health_status(self):
         """Send detailed health status according to protocol spec"""
@@ -640,8 +625,6 @@ class BMTLMQTTDaemon:
                     if incorrect_id != self.device_id:
                         # Send empty retained messages to clear old ones
                         clear_topics = [
-                            f"{self.status_topic}/{incorrect_id}",
-                            f"{self.heartbeat_topic}/{incorrect_id}",
                             f"bmtl/status/health/{incorrect_id}"
                         ]
 
@@ -652,21 +635,6 @@ class BMTLMQTTDaemon:
         except Exception as e:
             self.logger.error(f"Error clearing old retained messages: {e}")
 
-    def send_heartbeat(self):
-        """Send simple heartbeat - kept for backward compatibility"""
-        try:
-            payload = {
-                'device_id': self.device_id,
-                'timestamp': datetime.now().isoformat(),
-                'uptime': self.get_uptime(),
-                'status': 'online'
-            }
-
-            topic = f"{self.heartbeat_topic}/{self.device_id}"
-            self.client.publish(topic, json.dumps(payload))
-
-        except Exception as e:
-            self.logger.error(f"Error sending heartbeat: {e}")
 
     def get_storage_metrics(self):
         """Collect storage metrics for the root filesystem"""
@@ -733,22 +701,28 @@ class BMTLMQTTDaemon:
         self.client.on_disconnect = self.on_disconnect
         self.client.on_message = self.on_message
         
-        # Set will message
+        # Set will message for health status
         will_payload = {
-            'device_id': self.device_id,
-            'sitename': self.device_sitename,
+            'module_id': f"bmotion{self.device_id}",
             'status': 'offline',
             'timestamp': datetime.now().isoformat()
         }
-        self.client.will_set(f"{self.status_topic}/{self.device_id}", 
+        self.client.will_set(f"bmtl/status/health/{self.device_id}",
                            json.dumps(will_payload), retain=True)
         
     def signal_handler(self, signum, frame):
         self.logger.info(f"Received signal {signum}, shutting down gracefully...")
         self.running = False
-        
+
         if self.client:
-            self.send_status("offline")
+            # Send offline health status
+            offline_payload = {
+                'module_id': f"bmotion{self.device_id}",
+                'status': 'offline',
+                'timestamp': datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/status/health/{self.device_id}",
+                              json.dumps(offline_payload), retain=True)
             self.client.disconnect()
             
     def run(self):
@@ -763,27 +737,15 @@ class BMTLMQTTDaemon:
             self.client.connect(self.mqtt_host, self.mqtt_port, 60)
             self.client.loop_start()
             
-            last_heartbeat = 0
-            last_status = 0
             last_health = 0
 
             while self.running:
                 current_time = time.time()
 
-                # Send heartbeat (backward compatibility)
-                if current_time - last_heartbeat >= self.heartbeat_interval:
-                    self.send_heartbeat()
-                    last_heartbeat = current_time
-
                 # Send detailed health status (protocol spec)
                 if current_time - last_health >= self.health_interval:
                     self.send_health_status()
                     last_health = current_time
-
-                # Send status update (less frequent)
-                if current_time - last_status >= self.status_interval:
-                    self.send_status("online")
-                    last_status = current_time
                     
                 time.sleep(1)
                 
@@ -792,7 +754,14 @@ class BMTLMQTTDaemon:
             
         finally:
             if self.client:
-                self.send_status("offline")
+                # Send offline health status
+                offline_payload = {
+                    'module_id': f"bmotion{self.device_id}",
+                    'status': 'offline',
+                    'timestamp': datetime.now().isoformat()
+                }
+                self.client.publish(f"bmtl/status/health/{self.device_id}",
+                                  json.dumps(offline_payload), retain=True)
                 self.client.loop_stop()
                 self.client.disconnect()
                 
