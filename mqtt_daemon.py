@@ -804,18 +804,12 @@ class BMTLMQTTDaemon:
             version_info = get_version_for_mqtt()
 
             payload = {
-                "response_type": "sw_version",
-                "module_id": f"bmotion{self.device_id}",
-                "sw_version": version_info["sw_version"],
-                "commit_hash": version_info["commit_hash"],
-                "branch": version_info["branch"],
-                "update_time": version_info["update_time"],
-                "timestamp": datetime.now().isoformat()
+                "version": version_info["commit_hash"],
             }
 
             topic = f"bmtl/response/sw-version/{self.device_id}"
             self.client.publish(topic, json.dumps(payload), qos=1, retain=True)
-            self.logger.info(f"Version info sent: {version_info['sw_version']}")
+            self.logger.info(f"Version info sent: {version_info['commit_hash']}")
 
         except Exception as e:
             self.logger.error(f"Error sending version info: {e}")
