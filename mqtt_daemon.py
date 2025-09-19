@@ -552,7 +552,32 @@ class BMTLMQTTDaemon:
             # Find sudo command
             sudo_cmd = shutil.which('sudo') or '/usr/bin/sudo'
             self.logger.info("🔄 Running install.sh in update mode...")
-            result = subprocess.run([sudo_cmd, './install.sh', 'update'], capture_output=True, text=True, timeout=300)
+
+            # Save update output to separate log file
+            update_log_path = os.path.join(self.log_dir, f"update_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+
+            result = subprocess.run([sudo_cmd, './install.sh', 'update'],
+                                  capture_output=True, text=True, timeout=300)
+
+            # Log the full output for debugging
+            update_output = f"=== Update Command Output ===\n"
+            update_output += f"Return code: {result.returncode}\n"
+            update_output += f"STDOUT:\n{result.stdout}\n"
+            update_output += f"STDERR:\n{result.stderr}\n"
+            update_output += f"=== End Output ===\n"
+
+            # Write to separate update log file
+            try:
+                with open(update_log_path, 'w') as f:
+                    f.write(update_output)
+                self.logger.info(f"Update output saved to: {update_log_path}")
+            except Exception as e:
+                self.logger.error(f"Failed to save update log: {e}")
+
+            # Also log to main logger
+            self.logger.info(f"Install.sh output: {result.stdout}")
+            if result.stderr:
+                self.logger.warning(f"Install.sh stderr: {result.stderr}")
 
             # Restore original directory
             os.chdir(original_cwd)
@@ -641,7 +666,33 @@ class BMTLMQTTDaemon:
             # Find sudo command
             sudo_cmd = shutil.which('sudo') or '/usr/bin/sudo'
             self.logger.info("🔄 Running install.sh in update mode...")
-            result = subprocess.run([sudo_cmd, './install.sh', 'update'], capture_output=True, text=True, timeout=300)
+
+            # Save rollback output to separate log file
+            rollback_log_path = os.path.join(self.log_dir, f"rollback_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+
+            result = subprocess.run([sudo_cmd, './install.sh', 'update'],
+                                  capture_output=True, text=True, timeout=300)
+
+            # Log the full output for debugging
+            rollback_output = f"=== Rollback Command Output ===\n"
+            rollback_output += f"Target: {target}\n"
+            rollback_output += f"Return code: {result.returncode}\n"
+            rollback_output += f"STDOUT:\n{result.stdout}\n"
+            rollback_output += f"STDERR:\n{result.stderr}\n"
+            rollback_output += f"=== End Output ===\n"
+
+            # Write to separate rollback log file
+            try:
+                with open(rollback_log_path, 'w') as f:
+                    f.write(rollback_output)
+                self.logger.info(f"Rollback output saved to: {rollback_log_path}")
+            except Exception as e:
+                self.logger.error(f"Failed to save rollback log: {e}")
+
+            # Also log to main logger
+            self.logger.info(f"Install.sh output: {result.stdout}")
+            if result.stderr:
+                self.logger.warning(f"Install.sh stderr: {result.stderr}")
 
             # Restore original directory
             os.chdir(original_cwd)
