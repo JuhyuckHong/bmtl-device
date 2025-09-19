@@ -563,78 +563,75 @@ class BMTLMQTTDaemon:
 
     def _execute_software_update(self):
         """Execute the actual software update process"""
+        import subprocess
+
+        update_log_path = None
+
         try:
-            # Check if git is available
             git_cmd = self._find_git_command()
             if not git_cmd:
                 raise Exception("Git is not installed or not found in PATH")
 
             app_dir = "/opt/bmtl-device"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            update_log_path = os.path.join(self.log_dir, f"update_{timestamp}.log")
+            os.makedirs(self.log_dir, exist_ok=True)
 
-            # Change to application directory
-            original_cwd = os.getcwd()
-            os.chdir(app_dir)
-
-            self.logger.info("🔄 Starting git stash...")
-            result = subprocess.run([git_cmd, 'stash'], capture_output=True, text=True, timeout=30)
-            if result.returncode != 0:
-                self.logger.warning(f"Git stash warning: {result.stderr}")
-
-            self.logger.info("🔄 Starting git pull...")
-            result = subprocess.run([git_cmd, 'pull'], capture_output=True, text=True, timeout=60)
-            if result.returncode != 0:
-                raise Exception(f"Git pull failed: {result.stderr}")
-
-            # Find chmod command
             chmod_cmd = shutil.which('chmod') or '/bin/chmod'
-            self.logger.info("🔄 Setting install.sh permissions...")
-            result = subprocess.run([chmod_cmd, '+x', './install.sh'], capture_output=True, text=True, timeout=10)
-            if result.returncode != 0:
-                raise Exception(f"Chmod failed: {result.stderr}")
+            bash_cmd = shutil.which('bash')
+            install_cmd = [bash_cmd, './install.sh'] if bash_cmd else ['./install.sh']
 
-            # Find sudo command
-            sudo_cmd = shutil.which('sudo') or '/usr/bin/sudo'
-            self.logger.info("🔄 Running install.sh in update mode...")
+            commands = [
+                ("git stash", [git_cmd, 'stash'], 60),
+                ("git pull", [git_cmd, 'pull'], 120),
+                ("chmod install.sh", [chmod_cmd, '+x', './install.sh'], 15),
+                ("install.sh", install_cmd, 900)
+            ]
 
-            # Save update output to separate log file
-            update_log_path = os.path.join(self.log_dir, f"update_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+            os.environ.setdefault('GIT_TERMINAL_PROMPT', '0')
 
-            # Run install.sh as detached process to survive service restart
-            # Use Popen with detached process and output redirection
-            update_cmd = f"{sudo_cmd} ./install.sh update"
+            def format_command(cmd):
+                return ' '.join(str(part) for part in cmd)
 
-            try:
-                # Use nohup to run detached process with output redirection
-                nohup_cmd = f"cd /opt/bmtl-device && nohup {update_cmd} > {update_log_path} 2>&1 &"
-                process = subprocess.Popen(
-                    ['/bin/bash', '-c', nohup_cmd],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                self.logger.info(f"Update process started with nohup")
-            except Exception as e:
-                self.logger.error(f"Failed to start update process: {e}")
-                raise
+            with open(update_log_path, 'w', encoding='utf-8') as log_file:
+                log_file.write(f"BMTL software update started at {datetime.now().isoformat()}\n")
 
-            self.logger.info(f"Update process launched in background, output will be logged to: {update_log_path}")
+                for step_name, cmd, timeout in commands:
+                    self.logger.info(f"Starting {step_name}...")
+                    try:
+                        result = subprocess.run(
+                            cmd,
+                            cwd=app_dir,
+                            capture_output=True,
+                            text=True,
+                            timeout=timeout
+                        )
+                    except subprocess.TimeoutExpired:
+                        log_file.write(f"$ {format_command(cmd)}\nERROR: Command timed out after {timeout}s\n")
+                        raise Exception(f"{step_name} timed out after {timeout} seconds")
 
-            # Since we're using detached process, we can't capture the install.sh output directly
-            # The update will continue in background even if this process terminates
+                    log_file.write(f"$ {format_command(cmd)}\n")
+                    if result.stdout:
+                        log_file.write(f"STDOUT:\n{result.stdout}")
+                    if result.stderr:
+                        log_file.write(f"STDERR:\n{result.stderr}")
+                    log_file.write(f"Return code: {result.returncode}\n\n")
+                    log_file.flush()
+
+                    if result.returncode != 0:
+                        raise Exception(f"{step_name} failed: {result.stderr.strip() or result.stdout.strip() or 'unknown error'}")
+
+                    self.logger.info(f"{step_name} completed successfully")
+
             success_payload = {
                 "response_type": "sw_update_result",
                 "module_id": f"bmotion{self.device_id}",
-                "status": "started_background",
-                "message": f"Software update started in background, check log: {update_log_path}",
+                "status": "completed",
+                "message": "Software update completed successfully",
                 "log_file": update_log_path,
                 "timestamp": datetime.now().isoformat()
             }
             self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(success_payload), qos=1)
-
-            # Restore original directory before return
-            os.chdir(original_cwd)
-
-            # Return early since update continues in background
-            return
 
         except Exception as e:
             self.logger.error(f"💥 Software update failed: {e}")
@@ -643,11 +640,12 @@ class BMTLMQTTDaemon:
                 "module_id": f"bmotion{self.device_id}",
                 "status": "failed",
                 "message": f"Software update failed: {str(e)}",
+                "log_file": update_log_path,
                 "timestamp": datetime.now().isoformat()
             }
             try:
                 self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(error_payload), qos=1)
-            except:
+            except Exception:
                 pass  # MQTT might be disconnected at this point
 
     def _execute_software_rollback(self, target="previous"):
@@ -798,12 +796,17 @@ class BMTLMQTTDaemon:
             version_info = get_version_for_mqtt()
 
             payload = {
-                "version": version_info["commit_hash"],
+                "module_id": f"bmotion{self.device_id}",
+                "sw_version": version_info.get("sw_version", "unknown"),
+                "commit_hash": version_info.get("commit_hash", "unknown"),
+                "branch": version_info.get("branch", "unknown"),
+                "update_time": version_info.get("update_time", datetime.now().isoformat()),
+                "timestamp": datetime.now().isoformat()
             }
 
             topic = f"bmtl/response/sw-version/{self.device_id}"
             self.client.publish(topic, json.dumps(payload), qos=1, retain=True)
-            self.logger.info(f"Version info sent: {version_info['commit_hash']}")
+            self.logger.info(f"Version info sent: {payload['sw_version']} ({payload['commit_hash']})")
 
         except Exception as e:
             self.logger.error(f"Error sending version info: {e}")
