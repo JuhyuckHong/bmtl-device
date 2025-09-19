@@ -10,6 +10,8 @@ import configparser
 import ssl
 import socket
 import re
+import subprocess
+import threading
 from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
@@ -110,8 +112,11 @@ class BMTLDeviceMQTTHandler:
             topics_to_subscribe = [
                 "bmtl/request/settings/all",  # 전체 설정 요청
                 f"bmtl/request/settings/{self.device_id}",  # 개별 설정 요청 (01, 02 등)
-                "bmtl/request/status",  # 전체 상태 요청
+                "bmtl/request/status/all",  # 전체 상태 요청
                 f"bmtl/set/settings/{self.device_id}",  # 설정 변경
+                f"bmtl/set/sitename/{self.device_id}",  # 현장 이름 변경
+                f"bmtl/sw-update/{self.device_id}",  # SW 업데이트
+                f"bmtl/sw-rollback/{self.device_id}",  # SW 롤백
                 "bmtl/request/reboot/all",  # 전체 재부팅
                 f"bmtl/request/reboot/{self.device_id}",  # 개별 재부팅
                 f"bmtl/request/options/{self.device_id}",  # 개별 options 요청
@@ -154,10 +159,16 @@ class BMTLDeviceMQTTHandler:
                 self.handle_settings_request_all()
             elif topic == f"bmtl/request/settings/{self.device_id}":
                 self.handle_settings_request_individual()
-            elif topic == "bmtl/request/status":
+            elif topic == "bmtl/request/status/all":
                 self.handle_status_request()
             elif topic == f"bmtl/set/settings/{self.device_id}":
                 self.handle_settings_change(payload)
+            elif topic == f"bmtl/set/sitename/{self.device_id}":
+                self.handle_set_sitename(payload)
+            elif topic == f"bmtl/sw-update/{self.device_id}":
+                self.handle_sw_update(payload)
+            elif topic == f"bmtl/sw-rollback/{self.device_id}":
+                self.handle_sw_rollback(payload)
             elif topic == "bmtl/request/reboot/all":
                 self.handle_reboot_all()
             elif topic == f"bmtl/request/reboot/{self.device_id}":
@@ -370,6 +381,120 @@ class BMTLDeviceMQTTHandler:
 
         except Exception as e:
             self.logger.error(f"Error handling camera power request: {e}")
+
+    def handle_set_sitename(self, payload):
+        """현장 이름 변경 처리"""
+        try:
+            data = json.loads(payload) if payload else {}
+            new_sitename = data.get('site_name', '')
+
+            if not new_sitename:
+                response = {
+                    "response_type": "set_sitename_result",
+                    "module_id": f"bmotion{self.device_id}",
+                    "success": False,
+                    "message": "site_name parameter is required",
+                    "timestamp": datetime.now().isoformat()
+                }
+                self.client.publish(f"bmtl/response/set/sitename/{self.device_id}", json.dumps(response), qos=1)
+                return
+
+            # config.ini 파일 업데이트
+            try:
+                config = configparser.ConfigParser()
+                config.read(self.config_path)
+
+                if not config.has_section('device'):
+                    config.add_section('device')
+
+                config.set('device', 'location', new_sitename)
+
+                with open(self.config_path, 'w') as configfile:
+                    config.write(configfile)
+
+                # 메모리 상의 설정도 업데이트
+                self.device_location = new_sitename
+
+                response = {
+                    "response_type": "set_sitename_result",
+                    "module_id": f"bmotion{self.device_id}",
+                    "success": True,
+                    "message": f"Site name updated to '{new_sitename}'. Daemon will restart to apply changes.",
+                    "new_sitename": new_sitename,
+                    "timestamp": datetime.now().isoformat()
+                }
+
+                self.client.publish(f"bmtl/response/set/sitename/{self.device_id}", json.dumps(response), qos=1)
+                self.logger.info(f"Site name updated to '{new_sitename}'")
+
+                # 설정 변경 후 데몬 재시작 (백그라운드에서 실행)
+                def restart_daemon():
+                    time.sleep(2)  # 응답 전송 후 잠시 대기
+                    self.logger.info("Restarting daemon to apply site name changes...")
+                    os.system("sudo systemctl restart bmtl-device-mqtt-handler")
+
+                threading.Thread(target=restart_daemon, daemon=True).start()
+
+            except Exception as e:
+                self.logger.error(f"Error updating config file: {e}")
+                response = {
+                    "response_type": "set_sitename_result",
+                    "module_id": f"bmotion{self.device_id}",
+                    "success": False,
+                    "message": f"Failed to update config file: {str(e)}",
+                    "timestamp": datetime.now().isoformat()
+                }
+                self.client.publish(f"bmtl/response/set/sitename/{self.device_id}", json.dumps(response), qos=1)
+
+        except Exception as e:
+            self.logger.error(f"Error handling set sitename: {e}")
+
+    def handle_sw_update(self, payload):
+        """소프트웨어 업데이트 처리"""
+        try:
+            response = {
+                "response_type": "sw_update_result",
+                "module_id": f"bmotion{self.device_id}",
+                "success": True,
+                "message": "Software update initiated. System will restart after update.",
+                "timestamp": datetime.now().isoformat()
+            }
+
+            self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(response), qos=1)
+            self.logger.info("Software update initiated")
+
+            # 백그라운드에서 업데이트 실행
+            def run_sw_update():
+                time.sleep(2)  # 응답 전송 후 잠시 대기
+                self.logger.info("Starting software update process...")
+                try:
+                    # 업데이트 명령 실행
+                    update_cmd = "cd /opt/bmtl-device && git stash && git pull && chmod +x ./install.sh && ./install.sh"
+                    subprocess.Popen(update_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception as e:
+                    self.logger.error(f"Error during software update: {e}")
+
+            threading.Thread(target=run_sw_update, daemon=True).start()
+
+        except Exception as e:
+            self.logger.error(f"Error handling software update: {e}")
+
+    def handle_sw_rollback(self, payload):
+        """소프트웨어 롤백 처리 (미구현)"""
+        try:
+            response = {
+                "response_type": "sw_rollback_result",
+                "module_id": f"bmotion{self.device_id}",
+                "success": False,
+                "message": "Software rollback feature is not implemented yet",
+                "timestamp": datetime.now().isoformat()
+            }
+
+            self.client.publish(f"bmtl/response/sw-rollback/{self.device_id}", json.dumps(response), qos=1)
+            self.logger.info("Software rollback request received but not implemented")
+
+        except Exception as e:
+            self.logger.error(f"Error handling software rollback: {e}")
 
     def send_health_status(self):
         """헬스 상태 주기적 전송"""
