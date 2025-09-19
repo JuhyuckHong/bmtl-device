@@ -556,51 +556,33 @@ class BMTLMQTTDaemon:
             # Save update output to separate log file
             update_log_path = os.path.join(self.log_dir, f"update_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
-            result = subprocess.run([sudo_cmd, './install.sh', 'update'],
-                                  capture_output=True, text=True, timeout=300)
+            # Run install.sh as detached process to survive service restart
+            # Use nohup to prevent termination when parent process dies
+            nohup_cmd = f"nohup {sudo_cmd} ./install.sh update > {update_log_path} 2>&1 &"
 
-            # Log the full output for debugging
-            update_output = f"=== Update Command Output ===\n"
-            update_output += f"Return code: {result.returncode}\n"
-            update_output += f"STDOUT:\n{result.stdout}\n"
-            update_output += f"STDERR:\n{result.stderr}\n"
-            update_output += f"=== End Output ===\n"
+            # Execute as shell command to allow nohup
+            result = subprocess.run(['/bin/bash', '-c', nohup_cmd],
+                                  capture_output=True, text=True, timeout=10)
 
-            # Write to separate update log file
-            try:
-                with open(update_log_path, 'w') as f:
-                    f.write(update_output)
-                self.logger.info(f"Update output saved to: {update_log_path}")
-            except Exception as e:
-                self.logger.error(f"Failed to save update log: {e}")
+            self.logger.info(f"Update process launched with nohup, output will be logged to: {update_log_path}")
 
-            # Also log to main logger
-            self.logger.info(f"Install.sh output: {result.stdout}")
-            if result.stderr:
-                self.logger.warning(f"Install.sh stderr: {result.stderr}")
+            # Since we're using nohup, we can't capture the install.sh output directly
+            # The update will continue in background even if this process terminates
+            success_payload = {
+                "response_type": "sw_update_result",
+                "module_id": f"bmotion{self.device_id}",
+                "status": "started_background",
+                "message": f"Software update started in background, check log: {update_log_path}",
+                "log_file": update_log_path,
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(success_payload), qos=1)
 
-            # Restore original directory
+            # Restore original directory before return
             os.chdir(original_cwd)
 
-            if result.returncode == 0:
-                self.logger.info("✅ Software update completed successfully")
-                success_payload = {
-                    "response_type": "sw_update_result",
-                    "module_id": f"bmotion{self.device_id}",
-                    "status": "completed",
-                    "message": "Software update completed successfully",
-                    "timestamp": datetime.now().isoformat()
-                }
-                self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(success_payload), qos=1)
-
-                # Send updated version information
-                time.sleep(1)  # Brief delay to ensure update message is sent first
-                self.send_version_info()
-
-                # Services will be restarted by install.sh, so this daemon will restart
-
-            else:
-                raise Exception(f"Install script failed: {result.stderr}")
+            # Return early since update continues in background
+            return
 
         except Exception as e:
             self.logger.error(f"💥 Software update failed: {e}")
@@ -670,53 +652,34 @@ class BMTLMQTTDaemon:
             # Save rollback output to separate log file
             rollback_log_path = os.path.join(self.log_dir, f"rollback_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
-            result = subprocess.run([sudo_cmd, './install.sh', 'update'],
-                                  capture_output=True, text=True, timeout=300)
+            # Run install.sh as detached process to survive service restart
+            # Use nohup to prevent termination when parent process dies
+            nohup_cmd = f"nohup {sudo_cmd} ./install.sh update > {rollback_log_path} 2>&1 &"
 
-            # Log the full output for debugging
-            rollback_output = f"=== Rollback Command Output ===\n"
-            rollback_output += f"Target: {target}\n"
-            rollback_output += f"Return code: {result.returncode}\n"
-            rollback_output += f"STDOUT:\n{result.stdout}\n"
-            rollback_output += f"STDERR:\n{result.stderr}\n"
-            rollback_output += f"=== End Output ===\n"
+            # Execute as shell command to allow nohup
+            result = subprocess.run(['/bin/bash', '-c', nohup_cmd],
+                                  capture_output=True, text=True, timeout=10)
 
-            # Write to separate rollback log file
-            try:
-                with open(rollback_log_path, 'w') as f:
-                    f.write(rollback_output)
-                self.logger.info(f"Rollback output saved to: {rollback_log_path}")
-            except Exception as e:
-                self.logger.error(f"Failed to save rollback log: {e}")
+            self.logger.info(f"Rollback process launched with nohup, output will be logged to: {rollback_log_path}")
 
-            # Also log to main logger
-            self.logger.info(f"Install.sh output: {result.stdout}")
-            if result.stderr:
-                self.logger.warning(f"Install.sh stderr: {result.stderr}")
+            # Since we're using nohup, we can't capture the install.sh output directly
+            # The rollback will continue in background even if this process terminates
+            success_payload = {
+                "response_type": "sw_rollback_result",
+                "module_id": f"bmotion{self.device_id}",
+                "status": "started_background",
+                "message": f"Software rollback to '{target}' started in background, check log: {rollback_log_path}",
+                "target": target,
+                "log_file": rollback_log_path,
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/sw-rollback/{self.device_id}", json.dumps(success_payload), qos=1)
 
-            # Restore original directory
+            # Restore original directory before return
             os.chdir(original_cwd)
 
-            if result.returncode == 0:
-                self.logger.info("✅ Software rollback completed successfully")
-                success_payload = {
-                    "response_type": "sw_rollback_result",
-                    "module_id": f"bmotion{self.device_id}",
-                    "status": "completed",
-                    "message": f"Software rollback to '{target}' completed successfully",
-                    "target": target,
-                    "timestamp": datetime.now().isoformat()
-                }
-                self.client.publish(f"bmtl/response/sw-rollback/{self.device_id}", json.dumps(success_payload), qos=1)
-
-                # Send updated version information
-                time.sleep(1)  # Brief delay to ensure rollback message is sent first
-                self.send_version_info()
-
-                # Services will be restarted by install.sh, so this daemon will restart
-
-            else:
-                raise Exception(f"Install script failed: {result.stderr}")
+            # Return early since rollback continues in background
+            return
 
         except Exception as e:
             self.logger.error(f"💥 Software rollback failed: {e}")
