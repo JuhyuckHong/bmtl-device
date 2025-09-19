@@ -129,7 +129,7 @@ class BMTLMQTTDaemon:
             self.logger.error(f"Error loading configuration: {e}")
             sys.exit(1)
             
-    def on_connect(self, client, userdata, flags, rc, properties=None):
+    def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             self.logger.info("Connected to MQTT broker")
             
@@ -175,7 +175,7 @@ class BMTLMQTTDaemon:
         else:
             self.logger.error(f"Failed to connect to MQTT broker with result code {rc}")
             
-    def on_disconnect(self, client, userdata, rc, properties=None):
+    def on_disconnect(self, client, userdata, rc):
         disconnect_reasons = {
             0: "Connection successful",
             1: "Connection refused - incorrect protocol version", 
@@ -190,7 +190,7 @@ class BMTLMQTTDaemon:
         reason = disconnect_reasons.get(rc, f"Unknown disconnect reason ({rc})")
         self.logger.warning(f"Disconnected from MQTT broker: {reason}")
         
-    def on_message(self, client, userdata, msg, properties=None):
+    def on_message(self, client, userdata, msg):
         try:
             topic = msg.topic
             payload = msg.payload.decode('utf-8')
@@ -906,10 +906,10 @@ class BMTLMQTTDaemon:
             return 0
             
     def setup_mqtt_client(self):
-        # Use latest callback API version to avoid deprecation warning
+        # Use VERSION1 for stability (VERSION2 has complex callback signatures)
         try:
             self.client = mqtt.Client(client_id=self.mqtt_client_id,
-                                      callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+                                      callback_api_version=mqtt.CallbackAPIVersion.VERSION1)
         except AttributeError:
             # Older paho-mqtt versions do not expose CallbackAPIVersion
             self.client = mqtt.Client(client_id=self.mqtt_client_id)
