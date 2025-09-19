@@ -180,7 +180,9 @@ class BMTLMQTTDaemon:
                 f"bmtl/request/wiper/{self.device_id}",
                 f"bmtl/request/camera-on-off/{self.device_id}",
                 f"bmtl/sw-update/{self.device_id}",
-                f"bmtl/sw-rollback/{self.device_id}"
+                f"bmtl/sw-rollback/{self.device_id}",
+                f"bmtl/set/sitename/{self.device_id}",
+                f"bmtl/request/sw-version/{self.device_id}"
             ]
 
             for topic in request_topics:
@@ -286,7 +288,7 @@ class BMTLMQTTDaemon:
                 elif topic == f"bmtl/request/camera-on-off/{self.device_id}":
                     self.handle_camera_power_request()
                 elif topic == f"bmtl/set/sitename/{self.device_id}":
-                    self.handle_sitename_set(message)
+                    self.handle_sitename_set(json.loads(payload))
                 elif topic == f"bmtl/request/sw-version/{self.device_id}":
                     self.handle_sw_version_request()
                 elif topic == f"bmtl/sw-update/{self.device_id}":
@@ -526,6 +528,60 @@ class BMTLMQTTDaemon:
             self.client.publish(f"bmtl/response/camera-on-off/{self.device_id}", json.dumps(error_payload), qos=1)
             self.logger.error(f"Error handling camera power request: {e}")
 
+    def handle_software_update(self):
+        """Handle bmtl/sw-update/{device_id} - Remote software update"""
+        import threading
+        try:
+            self.logger.info("Remote software update requested")
+            update_thread = threading.Thread(
+                target=self._execute_software_update,
+                daemon=True
+            )
+            update_thread.start()
+            payload = {
+                "success": True,
+                "message": "Software update process started."
+            }
+            self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(payload), qos=1)
+        except Exception as e:
+            self.logger.error(f"Error handling software update request: {e}")
+            error_payload = {
+                "success": False,
+                "message": f"Update failed to start: {str(e)}"
+            }
+            self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(error_payload), qos=1)
+
+    def _execute_software_update(self):
+        """Execute the actual software update process"""
+        try:
+            self.logger.info("Executing software update...")
+            update_command = "cd /opt/bmtl-device && git stash && git pull && chmod +x ./install.sh && sudo ./install.sh update"
+            result = subprocess.run(update_command, shell=True, capture_output=True, text=True, timeout=300)
+            if result.returncode == 0:
+                self.logger.info("Software update successful")
+                # The device will likely reboot, but we can send a message beforehand
+                success_payload = {
+                    "success": True,
+                    "message": "Software update command executed successfully.",
+                    "stdout": result.stdout
+                }
+                self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(success_payload), qos=1)
+            else:
+                self.logger.error(f"Software update failed: {result.stderr}")
+                error_payload = {
+                    "success": False,
+                    "message": "Software update command failed.",
+                    "stderr": result.stderr
+                }
+                self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(error_payload), qos=1)
+        except Exception as e:
+            self.logger.error(f"Exception during software update: {e}")
+            error_payload = {
+                "success": False,
+                "message": f"Exception during software update: {str(e)}"
+            }
+            self.client.publish(f"bmtl/response/sw-update/{self.device_id}", json.dumps(error_payload), qos=1)
+
     def handle_software_rollback(self, payload):
         """Handle bmtl/sw-rollback/{device_id} - Remote software rollback"""
         import threading
@@ -690,18 +746,21 @@ class BMTLMQTTDaemon:
         except Exception as e:
             self.logger.error(f"Error sending version info: {e}")
 
-    def handle_sitename_set(self, message):
+    def handle_sitename_set(self, data):
         """Handle sitename change request"""
         try:
-            sitename = message.get("sitename", "")
+            sitename = data.get("sitename", "")
             if not sitename:
                 raise ValueError("Sitename cannot be empty")
 
-            sitename_file = os.path.join(self.log_dir, "sitename.txt")
-            os.makedirs(self.log_dir, exist_ok=True)
-            with open(sitename_file, "w") as f:
-                f.write(sitename)
+            # Update the config file
+            config = configparser.ConfigParser()
+            config.read(self.config_path)
+            config.set('device', 'sitename', sitename)
+            with open(self.config_path, 'w') as configfile:
+                config.write(configfile)
 
+            # Update the value in the running daemon
             self.device_sitename = sitename
             self.logger.info(f"Sitename updated to: {sitename}")
 
@@ -713,6 +772,9 @@ class BMTLMQTTDaemon:
                 "updated_at": datetime.now().isoformat()
             }
             self.client.publish(f"bmtl/response/sitename/{self.device_id}", json.dumps(payload), qos=1)
+            
+            # A restart might be needed for other processes to see the change.
+            # self.logger.info("Daemon restart is recommended for sitename change to be fully effective.")
 
         except Exception as e:
             self.logger.error(f"Error setting sitename: {e}")

@@ -1,0 +1,592 @@
+{
+  "system_name": "BMTL Control System",
+  "version": "0.1.0",
+  "description": "빌드모션 카메라 모듈 제어 시스템 - MQTT 기반 실시간 모니터링 및 제어",
+  "technology_stack": {
+    "frontend": {
+      "framework": "React 19.1.1",
+      "build_tool": "Vite 7.1.2",
+      "routing": "React Router DOM 7.9.1",
+      "mqtt_client": "MQTT.js 5.14.1",
+      "language": "JavaScript/JSX"
+    },
+    "protocols": {
+      "communication": "MQTT over WebSocket (WSS)",
+      "message_format": "JSON",
+      "qos_levels": [0, 1, 2]
+    }
+  },
+  "software_architecture": {
+    "structure": "Single Page Application (SPA)",
+    "main_components": {
+      "App.jsx": {
+        "description": "메인 애플리케이션 컴포넌트",
+        "responsibilities": [
+          "라우팅 관리",
+          "MQTT 연결 상태 관리",
+          "전역 상태 관리",
+          "페이지 네비게이션"
+        ],
+        "routes": [
+          {
+            "path": "/",
+            "component": "ModuleControl",
+            "description": "모듈 제어 페이지 (기본)"
+          },
+          {
+            "path": "/control",
+            "component": "ModuleControl",
+            "description": "모듈 제어 페이지"
+          },
+          {
+            "path": "/mqtt",
+            "component": "MQTTPage",
+            "description": "MQTT 메시지 제어 페이지"
+          },
+          {
+            "path": "/docs",
+            "component": "ApiDocsPage",
+            "description": "API 명세서 페이지"
+          }
+        ]
+      },
+      "hooks": {
+        "useMQTT.jsx": {
+          "description": "MQTT 연결 및 메시지 관리 훅",
+          "functions": [
+            "connect(config) - MQTT 브로커 연결",
+            "disconnect() - 연결 해제",
+            "subscribe(topic) - 토픽 구독",
+            "unsubscribe(topic) - 구독 해제",
+            "publish(topic, payload, qos) - 메시지 발행",
+            "recordExternalPublish(topic, payload, qos) - 외부 발행 기록"
+          ],
+          "state_management": [
+            "isConnected - 연결 상태",
+            "isConnecting - 연결 중 상태",
+            "status - 연결 상태 메시지",
+            "messages - 메시지 히스토리 (최대 500개)",
+            "subscribedTopics - 구독 중인 토픽 목록"
+          ]
+        },
+        "useCameraStatus.jsx": {
+          "description": "카메라 모듈 상태 및 명령 관리 훅",
+          "functions": [
+            "sendCommand(moduleId, command, data) - 통합 명령 전송",
+            "requestSettings(moduleId) - 설정 요청",
+            "requestOptions(moduleId) - 옵션 요청",
+            "requestAllOptions() - 전체 옵션 요청"
+          ],
+          "state_management": [
+            "moduleStatuses - 모듈 상태 정보",
+            "moduleSettings - 모듈 설정 정보",
+            "moduleOptions - 모듈 옵션 정보"
+          ],
+          "auto_subscribed_topics": [
+            "bmtl/status/health/+",
+            "bmtl/response/settings/+",
+            "bmtl/response/set/settings/+",
+            "bmtl/response/reboot/+",
+            "bmtl/response/reboot/all",
+            "bmtl/response/options/+",
+            "bmtl/response/options/all",
+            "bmtl/response/wiper/+",
+            "bmtl/response/camera-on-off/+",
+            "bmtl/response/set/sitename/+",
+            "bmtl/response/sw-update/+",
+            "bmtl/response/sw-version/+",
+            "bmtl/response/sw-rollback/+"
+          ]
+        }
+      },
+      "pages": {
+        "ModuleControl.jsx": {
+          "description": "카메라 모듈 제어 메인 페이지",
+          "features": [
+            "모듈 목록 및 상태 표시",
+            "필터링 (전체/온라인/오프라인)",
+            "검색 (모듈 번호, 현장 이름)",
+            "전역 명령 (전체 상태 요청, 전체 재부팅)",
+            "개별 모듈 제어"
+          ]
+        },
+        "MQTTPage.jsx": {
+          "description": "MQTT 메시지 제어 페이지",
+          "features": [
+            "실시간 메시지 로그",
+            "토픽 구독 관리",
+            "메시지 발행",
+            "QoS 설정"
+          ]
+        },
+        "ApiDocsPage.jsx": {
+          "description": "API 명세서 페이지",
+          "features": [
+            "MQTT 토픽 목록",
+            "메시지 페이로드 예시",
+            "토픽 패턴 설명",
+            "에러 코드 설명"
+          ]
+        }
+      },
+      "components": {
+        "LoginForm.jsx": {
+          "description": "MQTT 브로커 연결 폼",
+          "fields": [
+            "broker - 브로커 주소",
+            "port - 포트 번호",
+            "username - 사용자명",
+            "password - 비밀번호"
+          ]
+        },
+        "CameraModuleRow.jsx": {
+          "description": "개별 카메라 모듈 제어 컴포넌트",
+          "features": [
+            "모듈 상태 표시",
+            "설정 관리",
+            "명령 실행",
+            "실시간 데이터 업데이트"
+          ]
+        },
+        "MessageLog.jsx": {
+          "description": "MQTT 메시지 로그 컴포넌트",
+          "features": [
+            "실시간 메시지 표시",
+            "메시지 타입별 색상 구분",
+            "타임스탬프 표시",
+            "로그 클리어 기능"
+          ]
+        },
+        "DarkModeToggle.jsx": {
+          "description": "다크모드 토글 컴포넌트"
+        },
+        "SiteNameModal.jsx": {
+          "description": "사이트 이름 변경 모달 컴포넌트"
+        }
+      }
+    }
+  },
+  "mqtt_communication": {
+    "connection": {
+      "protocol": "WSS (WebSocket Secure)",
+      "path": "/mqtt",
+      "client_id_format": "bmtl_mqtt_client_{random_8_chars}",
+      "keep_alive": 30,
+      "clean_session": true,
+      "connect_timeout": 10000,
+      "protocol_version": 4
+    },
+    "topics": {
+      "publish_topics": {
+        "device_control": {
+          "bmtl/request/settings/all": {
+            "description": "전체 설정 불러오기 요청",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/status/health/+"
+          },
+          "bmtl/request/settings/{module_id}": {
+            "description": "개별 모듈 설정 요청",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/response/settings/{module_id}"
+          },
+          "bmtl/set/settings/{module_id}": {
+            "description": "개별 모듈 설정 변경",
+            "qos": 2,
+            "payload": {
+              "start_time": "string (HH:MM)",
+              "end_time": "string (HH:MM)",
+              "capture_interval": "number (minutes)",
+              "image_size": "string (e.g., '1920x1080')",
+              "quality": "string",
+              "iso": "string",
+              "format": "string",
+              "aperture": "string"
+            },
+            "response_topic": "bmtl/response/set/settings/{module_id}"
+          },
+          "bmtl/request/reboot/all": {
+            "description": "전체 재부팅 명령",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/response/reboot/all"
+          },
+          "bmtl/request/reboot/{module_id}": {
+            "description": "개별 모듈 재부팅",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/response/reboot/{module_id}"
+          },
+          "bmtl/request/options/all": {
+            "description": "전체 모듈 옵션 요청",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/response/options/all"
+          },
+          "bmtl/request/options/{module_id}": {
+            "description": "개별 모듈 옵션 요청",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/response/options/{module_id}"
+          },
+          "bmtl/request/wiper/{module_id}": {
+            "description": "와이퍼 30초 동작 명령",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/response/wiper/{module_id}"
+          },
+          "bmtl/request/camera-on-off/{module_id}": {
+            "description": "카메라 전원 On/Off 명령",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/response/camera-on-off/{module_id}"
+          },
+          "bmtl/set/sitename/{module_id}": {
+            "description": "사이트 이름 변경",
+            "qos": 2,
+            "payload": {
+              "site_name": "string"
+            },
+            "response_topic": "bmtl/response/set/sitename/{module_id}"
+          },
+          "bmtl/sw-update/{module_id}": {
+            "description": "소프트웨어 업데이트",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/response/sw-update/{module_id}"
+          },
+          "bmtl/sw-rollback/{module_id}": {
+            "description": "소프트웨어 롤백",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/response/sw-rollback/{module_id}"
+          },
+          "bmtl/request/sw-version/{module_id}": {
+            "description": "소프트웨어 버전 요청",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/response/sw-version/{module_id}"
+          },
+          "bmtl/request/status/all": {
+            "description": "전체 모듈 상태 요청",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/status/health/+"
+          },
+          "bmtl/request/status/{module_id}": {
+            "description": "개별 모듈 상태 요청",
+            "qos": 2,
+            "payload": {},
+            "response_topic": "bmtl/status/health/{module_id}"
+          }
+        }
+      },
+      "subscribe_topics": {
+        "device_status": {
+          "bmtl/status/health/+": {
+            "description": "디바이스 헬스 상태 수신",
+            "qos": "0-1",
+            "payload": {
+              "module_id": "string (e.g., 'bmotion01')",
+              "site_name": "string",
+              "storage_used": "number (percentage)",
+              "temperature": "number (celsius)",
+              "battery_level": "number (percentage)",
+              "last_capture_time": "string (ISO 8601)",
+              "last_boot_time": "string (ISO 8601)",
+              "today_total_captures": "number",
+              "today_captured_count": "number",
+              "missed_captures": "number",
+              "sw_version": "string"
+            }
+          }
+        },
+        "device_responses": {
+          "bmtl/response/settings/+": {
+            "description": "개별 설정 응답",
+            "qos": 1,
+            "payload": {
+              "response_type": "settings",
+              "module_id": "string",
+              "settings": {
+                "start_time": "string",
+                "end_time": "string",
+                "capture_interval": "number",
+                "image_size": "string",
+                "quality": "string",
+                "iso": "string",
+                "format": "string",
+                "aperture": "string"
+              },
+              "timestamp": "string (ISO 8601)"
+            }
+          },
+          "bmtl/response/set/settings/+": {
+            "description": "설정 변경 응답",
+            "qos": 1,
+            "payload": {
+              "response_type": "set_settings_result",
+              "module_id": "string",
+              "success": "boolean",
+              "message": "string",
+              "applied_settings": "object",
+              "timestamp": "string (ISO 8601)"
+            }
+          },
+          "bmtl/response/reboot/+": {
+            "description": "재부팅 응답",
+            "qos": 1,
+            "payload": {
+              "response_type": "reboot_result",
+              "module_id": "string",
+              "success": "boolean",
+              "message": "string",
+              "timestamp": "string (ISO 8601)"
+            }
+          },
+          "bmtl/response/options/+": {
+            "description": "옵션 정보 응답",
+            "qos": 1,
+            "payload": {
+              "response_type": "options",
+              "module_id": "string",
+              "options": {
+                "supported_resolutions": "array",
+                "supported_formats": "array",
+                "iso_range": "array",
+                "aperture_range": "array"
+              },
+              "timestamp": "string (ISO 8601)"
+            }
+          },
+          "bmtl/response/wiper/+": {
+            "description": "와이퍼 동작 응답",
+            "qos": 1,
+            "payload": {
+              "response_type": "wiper_result",
+              "module_id": "string",
+              "success": "boolean",
+              "message": "string",
+              "timestamp": "string (ISO 8601)"
+            }
+          },
+          "bmtl/response/camera-on-off/+": {
+            "description": "카메라 전원 제어 응답",
+            "qos": 1,
+            "payload": {
+              "response_type": "camera_power_result",
+              "module_id": "string",
+              "success": "boolean",
+              "message": "string",
+              "new_state": "string (on/off)",
+              "timestamp": "string (ISO 8601)"
+            }
+          },
+          "bmtl/response/set/sitename/+": {
+            "description": "사이트 이름 변경 응답",
+            "qos": 1,
+            "payload": {
+              "response_type": "sitename_result",
+              "module_id": "string",
+              "success": "boolean",
+              "message": "string",
+              "site_name": "string"
+            }
+          },
+          "bmtl/response/sw-update/+": {
+            "description": "소프트웨어 업데이트 응답",
+            "qos": 1,
+            "payload": {
+              "success": "boolean",
+              "message": "string",
+              "version": "string"
+            }
+          },
+          "bmtl/response/sw-version/+": {
+            "description": "소프트웨어 버전 정보",
+            "qos": 1,
+            "payload": {
+              "commit_hash": "string"
+            }
+          },
+          "bmtl/response/sw-rollback/+": {
+            "description": "소프트웨어 롤백 응답",
+            "qos": 1,
+            "payload": {
+              "success": "boolean",
+              "message": "string"
+            }
+          }
+        }
+      }
+    },
+    "module_id_format": {
+      "display_format": "bmotion{XX}",
+      "internal_format": "number (e.g., 1, 2, 3...)",
+      "padding": "2자리 zero-padding (01, 02, 03...)"
+    }
+  },
+  "features": {
+    "module_monitoring": {
+      "real_time_status": [
+        "연결 상태 (온라인/오프라인)",
+        "현장 이름",
+        "저장소 사용률",
+        "장비 온도",
+        "배터리 레벨",
+        "촬영 현황 (오늘 총 촬영/완료/누락)",
+        "마지막 촬영 시간",
+        "마지막 부팅 시간",
+        "소프트웨어 버전"
+      ],
+      "auto_offline_detection": {
+        "timeout": "5분",
+        "check_interval": "30초",
+        "description": "5분간 헬스 메시지가 없으면 자동으로 오프라인 상태로 변경"
+      }
+    },
+    "module_control": {
+      "individual_commands": [
+        "상태 요청",
+        "설정 요청/변경",
+        "옵션 요청",
+        "재부팅",
+        "와이퍼 동작",
+        "카메라 전원 제어",
+        "사이트 이름 변경",
+        "소프트웨어 업데이트",
+        "소프트웨어 롤백",
+        "소프트웨어 버전 요청"
+      ],
+      "global_commands": [
+        "전체 상태 요청",
+        "전체 옵션 요청",
+        "전체 재부팅"
+      ]
+    },
+    "ui_features": {
+      "filtering": [
+        "전체",
+        "온라인",
+        "오프라인"
+      ],
+      "search": [
+        "모듈 번호로 검색",
+        "현장 이름으로 검색"
+      ],
+      "navigation": [
+        "모듈 제어 페이지",
+        "MQTT 메시지 페이지",
+        "API 명세서 페이지"
+      ],
+      "themes": [
+        "라이트 모드",
+        "다크 모드"
+      ]
+    },
+    "mqtt_management": {
+      "connection_management": [
+        "브로커 연결/해제",
+        "연결 상태 모니터링",
+        "자동 재연결"
+      ],
+      "topic_management": [
+        "토픽 구독/구독해제",
+        "구독 토픽 목록 표시"
+      ],
+      "message_handling": [
+        "실시간 메시지 로그 (최대 500개)",
+        "메시지 타입별 구분 (수신/발송/시스템)",
+        "타임스탬프 표시",
+        "메시지 히스토리 클리어"
+      ]
+    }
+  },
+  "error_handling": {
+    "mqtt_errors": [
+      {
+        "code": "CONN_ERR",
+        "description": "브로커 연결 실패",
+        "solution": "브로커 주소와 포트 확인"
+      },
+      {
+        "code": "AUTH_ERR",
+        "description": "인증 실패",
+        "solution": "사용자명/비밀번호 확인"
+      },
+      {
+        "code": "SUB_ERR",
+        "description": "구독 실패",
+        "solution": "토픽 권한 확인"
+      },
+      {
+        "code": "PUB_ERR",
+        "description": "발행 실패",
+        "solution": "페이로드 크기 및 형식 확인"
+      }
+    ],
+    "message_parsing": [
+      "JSON 파싱 에러 처리",
+      "알 수 없는 토픽 처리",
+      "페이로드 검증"
+    ]
+  },
+  "development_features": {
+    "dummy_data": {
+      "enabled": "개발 모드에서만",
+      "module_id": 0,
+      "description": "테스트용 더미 모듈 데이터 제공"
+    },
+    "debug_logging": {
+      "enabled": "개발 모드에서만",
+      "features": [
+        "MQTT 메시지 상세 로그",
+        "연결 상태 변경 로그",
+        "명령 실행 로그"
+      ]
+    }
+  },
+  "deployment": {
+    "build_commands": [
+      "npm run dev - 개발 서버 실행",
+      "npm run build - 프로덕션 빌드",
+      "npm run preview - 빌드 미리보기"
+    ],
+    "environment_variables": [
+      "VITE_MQTT_BROKER_PROTOCOL - MQTT 프로토콜 (기본: wss)",
+      "VITE_MQTT_BROKER_HOST - MQTT 브로커 호스트",
+      "VITE_MQTT_BROKER_PORT - MQTT 브로커 포트"
+    ]
+  },
+  "file_structure": {
+    "src/": {
+      "App.jsx": "메인 애플리케이션 컴포넌트",
+      "App.css": "메인 스타일시트",
+      "hooks/": {
+        "useMQTT.jsx": "MQTT 연결 및 메시지 관리 훅",
+        "useCameraStatus.jsx": "카메라 상태 및 명령 관리 훅"
+      },
+      "pages/": {
+        "ModuleControl.jsx": "모듈 제어 페이지",
+        "MQTTPage.jsx": "MQTT 메시지 페이지",
+        "ApiDocsPage.jsx": "API 명세서 페이지"
+      },
+      "components/": {
+        "LoginForm.jsx": "MQTT 연결 폼",
+        "CameraModuleRow.jsx": "모듈 행 컴포넌트",
+        "MessageLog.jsx": "메시지 로그 컴포넌트",
+        "DarkModeToggle.jsx": "다크모드 토글",
+        "SiteNameModal.jsx": "사이트명 변경 모달"
+      },
+      "styles/": {
+        "api-docs.css": "API 문서 스타일"
+      }
+    },
+    "public/": {
+      "manifest.json": "웹 애플리케이션 매니페스트"
+    },
+    "package.json": "프로젝트 의존성 및 스크립트",
+    "vite.config.js": "Vite 빌드 설정"
+  }
+}

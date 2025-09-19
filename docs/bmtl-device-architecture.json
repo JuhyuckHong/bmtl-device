@@ -1,0 +1,599 @@
+{
+  "documentation": {
+    "title": "BMTL Device Software Architecture Documentation",
+    "version": "1.0",
+    "created": "2025-09-20",
+    "description": "Complete documentation of BMTL device software structure, MQTT protocols, and functionality"
+  },
+  "software_architecture": {
+    "overview": "BMTL Device는 카메라 기반 모니터링 시스템으로, MQTT 프로토콜을 통해 원격 제어 및 상태 모니터링이 가능한 분산형 아키텍처를 가지고 있습니다.",
+    "components": {
+      "mqtt_daemon": {
+        "file": "mqtt_daemon.py",
+        "description": "메인 MQTT 클라이언트 데몬으로 브로커와의 연결 및 메시지 처리를 담당",
+        "class": "BMTLMQTTDaemon",
+        "responsibilities": [
+          "MQTT 브로커 연결 관리",
+          "프로토콜 메시지 수신 및 응답",
+          "헬스 상태 주기적 전송",
+          "소프트웨어 업데이트/롤백 처리",
+          "디바이스 설정 관리"
+        ],
+        "configuration": {
+          "config_file": "/etc/bmtl-device/config.ini",
+          "log_files": [
+            "logs/mqtt_daemon.log",
+            "logs/mqtt_messages.log"
+          ]
+        }
+      },
+      "camera_daemon": {
+        "file": "camera_daemon.py",
+        "description": "카메라 제어 및 촬영 스케줄 관리를 담당하는 데몬",
+        "class": "BMTLCameraDaemon",
+        "responsibilities": [
+          "gphoto2를 통한 카메라 제어",
+          "촬영 스케줄 관리",
+          "촬영 통계 추적",
+          "설정 파일 변경 감지"
+        ],
+        "camera_controller": {
+          "class": "CameraController",
+          "features": [
+            "카메라 연결 상태 확인",
+            "촬영 실행",
+            "설정 적용",
+            "통계 업데이트"
+          ]
+        }
+      },
+      "device_mqtt_handler": {
+        "file": "device_mqtt_handler.py",
+        "description": "디바이스용 MQTT 핸들러 (대체 구현체)",
+        "class": "BMTLDeviceMQTTHandler",
+        "responsibilities": [
+          "확장된 설정 관리",
+          "gphoto2 통합",
+          "향상된 메시지 처리"
+        ]
+      },
+      "gphoto2_controller": {
+        "file": "gphoto2_controller.py",
+        "description": "gphoto2 라이브러리를 통한 카메라 옵션 조회 및 제어",
+        "class": "GPhoto2Controller",
+        "responsibilities": [
+          "카메라 옵션 동적 조회",
+          "카메라 설정 적용",
+          "현재 설정값 조회",
+          "카메라 전원 상태 관리"
+        ]
+      },
+      "shared_config": {
+        "file": "shared_config.py",
+        "description": "스레드 안전한 파일 기반 설정 관리자",
+        "class": "SafeFileConfig",
+        "responsibilities": [
+          "원자적 파일 쓰기",
+          "파일 잠금 처리",
+          "설정 캐싱",
+          "임시/영구 설정 분리"
+        ]
+      },
+      "version_manager": {
+        "file": "version_manager.py",
+        "description": "소프트웨어 버전 정보 관리",
+        "class": "VersionManager",
+        "responsibilities": [
+          "Git 버전 정보 조회",
+          "MQTT용 버전 정보 포맷팅",
+          "버전 정보 파일 관리"
+        ]
+      }
+    },
+    "data_flow": {
+      "description": "컴포넌트 간 데이터 흐름",
+      "interactions": [
+        {
+          "from": "mqtt_daemon",
+          "to": "shared_config",
+          "description": "카메라 설정 저장/조회"
+        },
+        {
+          "from": "camera_daemon",
+          "to": "shared_config",
+          "description": "설정 변경 감지 및 촬영 통계 저장"
+        },
+        {
+          "from": "mqtt_daemon",
+          "to": "version_manager",
+          "description": "버전 정보 조회"
+        },
+        {
+          "from": "device_mqtt_handler",
+          "to": "gphoto2_controller",
+          "description": "카메라 제어 및 옵션 조회"
+        }
+      ]
+    }
+  },
+  "mqtt_protocol": {
+    "overview": "BMTL Device는 구조화된 MQTT 프로토콜을 사용하여 서버와 통신합니다.",
+    "topic_structure": {
+      "pattern": "bmtl/{category}/{action}/{target}",
+      "categories": ["request", "response", "status", "set", "sw-update", "sw-rollback"],
+      "targets": ["all", "{device_id}"]
+    },
+    "device_identification": {
+      "device_id_extraction": "호스트네임에서 자동 추출 (예: bmotion01 → 01)",
+      "module_id_format": "bmotion{device_id}",
+      "fallback_device_id": "01"
+    },
+    "subscription_topics": [
+      "bmtl/request/settings/all",
+      "bmtl/request/settings/{device_id}",
+      "bmtl/request/status/{device_id}",
+      "bmtl/request/status/all",
+      "bmtl/request/status",
+      "bmtl/set/settings/{device_id}",
+      "bmtl/request/reboot/all",
+      "bmtl/request/reboot/{device_id}",
+      "bmtl/request/options/{device_id}",
+      "bmtl/request/options/all",
+      "bmtl/request/wiper/{device_id}",
+      "bmtl/request/camera-on-off/{device_id}",
+      "bmtl/sw-update/{device_id}",
+      "bmtl/sw-rollback/{device_id}",
+      "bmtl/set/sitename/{device_id}",
+      "bmtl/request/sw-version/{device_id}"
+    ],
+    "published_topics": [
+      "bmtl/status/health/{device_id}",
+      "bmtl/response/settings/{device_id}",
+      "bmtl/response/settings/all",
+      "bmtl/response/set/settings/{device_id}",
+      "bmtl/response/reboot/{device_id}",
+      "bmtl/response/reboot/all",
+      "bmtl/response/options/{device_id}",
+      "bmtl/response/options/all",
+      "bmtl/response/wiper/{device_id}",
+      "bmtl/response/camera-on-off/{device_id}",
+      "bmtl/response/sw-update/{device_id}",
+      "bmtl/response/sw-rollback/{device_id}",
+      "bmtl/response/sitename/{device_id}",
+      "bmtl/response/sw-version/{device_id}"
+    ]
+  },
+  "mqtt_messages": {
+    "request_messages": {
+      "settings_request_all": {
+        "topic": "bmtl/request/settings/all",
+        "payload": "empty",
+        "description": "전체 디바이스 설정 요청",
+        "response_topic": "bmtl/status/health/{device_id}",
+        "response_payload": {
+          "module_id": "bmotion{device_id}",
+          "storage_used": "number (percentage)",
+          "temperature": "number (celsius)",
+          "last_capture_time": "ISO datetime string",
+          "last_boot_time": "ISO datetime string",
+          "today_total_captures": "number",
+          "today_captured_count": "number",
+          "missed_captures": "number",
+          "sw_version": "string",
+          "site_name": "string"
+        }
+      },
+      "settings_request_individual": {
+        "topic": "bmtl/request/settings/{device_id}",
+        "payload": "empty",
+        "description": "개별 디바이스 설정 요청",
+        "response_topic": "bmtl/response/settings/{device_id}",
+        "response_payload": {
+          "response_type": "settings",
+          "module_id": "bmotion{device_id}",
+          "success": "boolean",
+          "message": "string",
+          "settings": {
+            "start_time": "HH:MM",
+            "end_time": "HH:MM",
+            "capture_interval": "number (minutes)",
+            "image_size": "WIDTHxHEIGHT",
+            "quality": "string",
+            "iso": "string",
+            "format": "string",
+            "aperture": "string"
+          },
+          "timestamp": "ISO datetime string"
+        }
+      },
+      "status_request": {
+        "topic": "bmtl/request/status/{device_id} | bmtl/request/status/all | bmtl/request/status",
+        "payload": "empty",
+        "description": "디바이스 상태 요청",
+        "response_topic": "bmtl/status/health/{device_id}",
+        "response_payload": "같은 헬스 상태 메시지"
+      },
+      "options_request_individual": {
+        "topic": "bmtl/request/options/{device_id}",
+        "payload": "empty",
+        "description": "개별 디바이스 옵션 요청",
+        "response_topic": "bmtl/response/options/{device_id}",
+        "response_payload": {
+          "response_type": "options",
+          "module_id": "bmotion{device_id}",
+          "success": "boolean",
+          "options": {
+            "supported_resolutions": ["1920x1080", "1280x720", "5184x3456"],
+            "supported_formats": ["JPG", "RAW"],
+            "iso_range": [100, 200, 400, 800, 1600, 3200, 6400],
+            "aperture_range": ["f/1.4", "f/2.8", "f/4", "f/5.6", "f/8", "f/11", "f/16"]
+          },
+          "timestamp": "ISO datetime string"
+        }
+      },
+      "options_request_all": {
+        "topic": "bmtl/request/options/all",
+        "payload": "empty",
+        "description": "전체 디바이스 옵션 요청",
+        "response_topic": "bmtl/response/options/all",
+        "response_payload": {
+          "response_type": "all_options",
+          "success": "boolean",
+          "modules": {
+            "bmotion{device_id}": "options object"
+          },
+          "timestamp": "ISO datetime string"
+        }
+      },
+      "wiper_request": {
+        "topic": "bmtl/request/wiper/{device_id}",
+        "payload": "empty",
+        "description": "와이퍼 동작 요청",
+        "response_topic": "bmtl/response/wiper/{device_id}",
+        "response_payload": {
+          "module_id": "bmotion{device_id}",
+          "success": "boolean",
+          "message": "string",
+          "started_at": "ISO datetime string"
+        }
+      },
+      "camera_power_request": {
+        "topic": "bmtl/request/camera-on-off/{device_id}",
+        "payload": "empty",
+        "description": "카메라 전원 토글 요청",
+        "response_topic": "bmtl/response/camera-on-off/{device_id}",
+        "response_payload": {
+          "response_type": "camera_power_result",
+          "module_id": "bmotion{device_id}",
+          "success": "boolean",
+          "message": "string",
+          "new_state": "on | off",
+          "timestamp": "ISO datetime string"
+        }
+      },
+      "reboot_request_all": {
+        "topic": "bmtl/request/reboot/all",
+        "payload": "empty",
+        "description": "전체 디바이스 재부팅 요청",
+        "response_topic": "bmtl/response/reboot/all",
+        "response_payload": {
+          "response_type": "reboot_all_result",
+          "success": "boolean",
+          "message": "string",
+          "affected_modules": ["bmotion{device_id}"],
+          "timestamp": "ISO datetime string"
+        }
+      },
+      "reboot_request_individual": {
+        "topic": "bmtl/request/reboot/{device_id}",
+        "payload": "empty",
+        "description": "개별 디바이스 재부팅 요청",
+        "response_topic": "bmtl/response/reboot/{device_id}",
+        "response_payload": {
+          "response_type": "reboot_result",
+          "module_id": "bmotion{device_id}",
+          "success": "boolean",
+          "message": "string",
+          "timestamp": "ISO datetime string"
+        }
+      },
+      "sw_version_request": {
+        "topic": "bmtl/request/sw-version/{device_id}",
+        "payload": "empty",
+        "description": "소프트웨어 버전 요청",
+        "response_topic": "bmtl/response/sw-version/{device_id}",
+        "response_payload": {
+          "commit_hash": "string (12자리 해시)"
+        }
+      }
+    },
+    "control_messages": {
+      "set_settings": {
+        "topic": "bmtl/set/settings/{device_id}",
+        "payload": {
+          "start_time": "HH:MM (optional)",
+          "end_time": "HH:MM (optional)",
+          "capture_interval": "number (optional)",
+          "image_size": "WIDTHxHEIGHT (optional)",
+          "quality": "string (optional)",
+          "iso": "string (optional)",
+          "format": "string (optional)",
+          "aperture": "string (optional)"
+        },
+        "description": "디바이스 설정 변경",
+        "response_topic": "bmtl/response/set/settings/{device_id}",
+        "response_payload": {
+          "response_type": "set_settings_result",
+          "module_id": "bmotion{device_id}",
+          "success": "boolean",
+          "message": "string",
+          "applied_settings": "object",
+          "timestamp": "ISO datetime string"
+        }
+      },
+      "set_sitename": {
+        "topic": "bmtl/set/sitename/{device_id}",
+        "payload": {
+          "sitename": "string"
+        },
+        "description": "현장명 변경",
+        "response_topic": "bmtl/response/sitename/{device_id}",
+        "response_payload": {
+          "module_id": "bmotion{device_id}",
+          "success": "boolean",
+          "message": "string",
+          "sitename": "string",
+          "updated_at": "ISO datetime string"
+        }
+      },
+      "software_update": {
+        "topic": "bmtl/sw-update/{device_id}",
+        "payload": "empty",
+        "description": "소프트웨어 업데이트 실행",
+        "response_topic": "bmtl/response/sw-update/{device_id}",
+        "response_payload": {
+          "success": "boolean",
+          "message": "string",
+          "stdout": "string (optional)",
+          "stderr": "string (optional)"
+        },
+        "update_command": "cd /opt/bmtl-device && git stash && git pull && chmod +x ./install.sh && sudo ./install.sh update"
+      },
+      "software_rollback": {
+        "topic": "bmtl/sw-rollback/{device_id}",
+        "payload": {
+          "target": "previous | HEAD~1 | HEAD~2 | {commit_hash} (optional, default: previous)"
+        },
+        "description": "소프트웨어 롤백 실행",
+        "response_topic": "bmtl/response/sw-rollback/{device_id}",
+        "response_payload": {
+          "success": "boolean",
+          "message": "string",
+          "log_file": "string (optional)"
+        }
+      }
+    },
+    "status_messages": {
+      "health_status": {
+        "topic": "bmtl/status/health/{device_id}",
+        "payload": {
+          "module_id": "bmotion{device_id}",
+          "storage_used": "number (percentage 0-100)",
+          "temperature": "number (celsius)",
+          "last_capture_time": "ISO datetime string | null",
+          "last_boot_time": "ISO datetime string",
+          "today_total_captures": "number",
+          "today_captured_count": "number",
+          "missed_captures": "number",
+          "sw_version": "string",
+          "site_name": "string"
+        },
+        "description": "주기적 헬스 상태 보고 (기본 5분 간격)",
+        "qos": 1,
+        "retain": false
+      },
+      "offline_status": {
+        "topic": "bmtl/status/health/{device_id}",
+        "payload": {
+          "module_id": "bmotion{device_id}",
+          "status": "offline",
+          "timestamp": "ISO datetime string"
+        },
+        "description": "디바이스 오프라인 상태",
+        "qos": 1,
+        "retain": true
+      }
+    }
+  },
+  "camera_integration": {
+    "overview": "gphoto2 라이브러리를 통한 DSLR/미러리스 카메라 제어",
+    "supported_cameras": "gphoto2 호환 모든 카메라",
+    "camera_operations": {
+      "connection_check": {
+        "command": "gphoto2 --auto-detect",
+        "description": "카메라 연결 상태 확인"
+      },
+      "option_inquiry": {
+        "command": "gphoto2 --get-config {setting}",
+        "supported_settings": ["iso", "aperture", "shutterspeed", "whitebalance", "imageformat"],
+        "description": "카메라 지원 옵션 동적 조회"
+      },
+      "setting_application": {
+        "command": "gphoto2 --set-config {setting}={value}",
+        "description": "카메라 설정 적용"
+      },
+      "photo_capture": {
+        "command": "gphoto2 --capture-image-and-download --filename {path}",
+        "storage_path": "/opt/bmtl-device/photos",
+        "filename_format": "photo_{YYYYMMDD_HHMMSS}.jpg"
+      }
+    },
+    "statistics_tracking": {
+      "file": "camera_stats.json",
+      "fields": {
+        "date": "YYYY-MM-DD",
+        "total_captures": "number",
+        "successful_captures": "number",
+        "missed_captures": "number",
+        "last_capture_time": "ISO datetime string",
+        "last_successful_capture": "ISO datetime string"
+      }
+    }
+  },
+  "configuration_management": {
+    "overview": "스레드 안전한 파일 기반 설정 관리 시스템",
+    "file_locations": {
+      "temporary_configs": "/tmp/bmtl-config",
+      "persistent_configs": "/etc/bmtl-device",
+      "main_config": "/etc/bmtl-device/config.ini"
+    },
+    "config_files": {
+      "camera_config.json": {
+        "path": "/tmp/bmtl-config",
+        "description": "임시 카메라 설정"
+      },
+      "camera_command.json": {
+        "path": "/tmp/bmtl-config",
+        "description": "즉시 실행할 카메라 명령"
+      },
+      "camera_stats.json": {
+        "path": "/tmp/bmtl-config",
+        "description": "촬영 통계"
+      },
+      "camera_schedule.json": {
+        "path": "/etc/bmtl-device",
+        "description": "촬영 스케줄 (영구)"
+      },
+      "device_settings.json": {
+        "path": "/etc/bmtl-device",
+        "description": "디바이스 설정 (영구)"
+      }
+    },
+    "safety_features": {
+      "atomic_writes": "tmpfile + rename을 통한 원자적 쓰기",
+      "file_locking": "fcntl을 통한 파일 잠금",
+      "caching": "메모리 캐싱으로 성능 향상",
+      "error_handling": "파일 손상 방지 및 복구"
+    }
+  },
+  "version_management": {
+    "overview": "Git 기반 소프트웨어 버전 관리 시스템",
+    "version_sources": {
+      "git_info": {
+        "commit_hash": "git rev-parse HEAD",
+        "commit_hash_short": "git rev-parse --short HEAD",
+        "tag": "git describe --tags --abbrev=0",
+        "describe": "git describe --tags --dirty",
+        "commit_date": "git log -1 --format=%ci",
+        "branch": "git branch --show-current"
+      },
+      "file_version": "VERSION 파일에서 읽기",
+      "fallback": "Git 불가용시 'unknown' 반환"
+    },
+    "mqtt_format": {
+      "sw_version": "주 버전 문자열",
+      "commit_hash": "12자리 해시",
+      "branch": "브랜치명",
+      "update_time": "타임스탬프"
+    }
+  },
+  "system_integration": {
+    "overview": "시스템 레벨 통합 및 관리",
+    "systemd_service": {
+      "service_name": "bmtl-device",
+      "service_file": "/etc/systemd/system/bmtl-device.service",
+      "auto_start": true,
+      "restart_policy": "always"
+    },
+    "logging": {
+      "daemon_log": "logs/mqtt_daemon.log",
+      "message_log": "logs/mqtt_messages.log",
+      "camera_log": "logs/camera_daemon.log",
+      "systemd_log": "journalctl -u bmtl-device"
+    },
+    "update_mechanism": {
+      "method": "git pull + install.sh",
+      "path": "/opt/bmtl-device",
+      "command": "cd /opt/bmtl-device && git stash && git pull && chmod +x ./install.sh && sudo ./install.sh update",
+      "rollback_support": true
+    },
+    "system_monitoring": {
+      "storage_usage": "shutil.disk_usage('/')",
+      "temperature": "/sys/class/thermal/thermal_zone0/temp",
+      "boot_time": "/proc/stat btime",
+      "uptime": "/proc/uptime"
+    }
+  },
+  "security_considerations": {
+    "mqtt_security": {
+      "tls_support": true,
+      "authentication": "username/password",
+      "qos_levels": "1-2 for critical messages"
+    },
+    "file_security": {
+      "atomic_operations": "방지: 부분 쓰기",
+      "file_locking": "방지: 동시 접근",
+      "path_validation": "방지: 경로 조작"
+    },
+    "command_security": {
+      "git_path_validation": "shutil.which() 사용",
+      "timeout_protection": "모든 subprocess 호출에 timeout",
+      "error_handling": "예외 처리 및 로깅"
+    }
+  },
+  "performance_characteristics": {
+    "mqtt_performance": {
+      "connection_keepalive": "60초",
+      "health_interval": "300초 (5분)",
+      "message_qos": "1-2 (중요 메시지)",
+      "retain_policy": "헬스 상태만 retain"
+    },
+    "file_performance": {
+      "config_caching": "메모리 캐싱",
+      "tmpfs_usage": "/tmp/bmtl-config (임시 설정)",
+      "atomic_writes": "성능 vs 안정성 균형"
+    },
+    "camera_performance": {
+      "gphoto2_timeout": "10-60초 (명령별)",
+      "stats_update": "매 촬영마다",
+      "schedule_check": "1분 간격"
+    }
+  },
+  "troubleshooting": {
+    "common_issues": {
+      "camera_not_detected": {
+        "symptoms": "gphoto2 --auto-detect 실패",
+        "solutions": [
+          "USB 케이블 확인",
+          "카메라 전원 확인",
+          "gphoto2 설치 확인",
+          "권한 확인"
+        ]
+      },
+      "mqtt_connection_failed": {
+        "symptoms": "MQTT 브로커 연결 실패",
+        "solutions": [
+          "네트워크 연결 확인",
+          "브로커 주소/포트 확인",
+          "인증 정보 확인",
+          "방화벽 설정 확인"
+        ]
+      },
+      "config_file_corruption": {
+        "symptoms": "JSON 파싱 에러",
+        "solutions": [
+          "파일 잠금 확인",
+          "디스크 공간 확인",
+          "설정 파일 재생성"
+        ]
+      }
+    },
+    "diagnostic_commands": {
+      "service_status": "systemctl status bmtl-device",
+      "logs": "journalctl -u bmtl-device -f",
+      "camera_test": "gphoto2 --auto-detect",
+      "mqtt_test": "mosquitto_pub/sub",
+      "config_test": "python3 shared_config.py"
+    }
+  }
+}
