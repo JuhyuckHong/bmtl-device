@@ -437,7 +437,20 @@ class BMTLDeviceMQTTHandler:
             return datetime.now().isoformat()
 
     def setup_mqtt_client(self):
-        self.client = mqtt.Client(client_id=self.mqtt_client_id)
+        # Prefer the modern callback API when available to avoid deprecation warnings
+        callback_version = getattr(getattr(mqtt, 'CallbackAPIVersion', object()), 'VERSION2', None)
+
+        if callback_version is not None:
+            try:
+                self.client = mqtt.Client(
+                    client_id=self.mqtt_client_id,
+                    callback_api_version=callback_version
+                )
+            except (AttributeError, TypeError):
+                # Older paho-mqtt versions do not accept callback_api_version
+                self.client = mqtt.Client(client_id=self.mqtt_client_id)
+        else:
+            self.client = mqtt.Client(client_id=self.mqtt_client_id)
 
         # Set username and password if provided
         if self.mqtt_username and self.mqtt_password:

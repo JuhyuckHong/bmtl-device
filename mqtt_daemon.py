@@ -129,10 +129,42 @@ class BMTLMQTTDaemon:
             self.logger.error(f"Error loading configuration: {e}")
             sys.exit(1)
             
-    def on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
+    @staticmethod
+    def _parse_reason(reason):
+        if isinstance(reason, int):
+            return reason, str(reason)
+        if reason is None:
+            return None, 'unknown'
+        label = getattr(reason, 'name', None) or getattr(reason, 'description', None)
+        if not label:
+            try:
+                label = str(reason)
+            except Exception:
+                label = 'unknown'
+        for candidate in (getattr(reason, 'value', None), reason):
+            if isinstance(candidate, int):
+                return candidate, label
+            try:
+                return int(candidate), label
+            except (TypeError, ValueError):
+                continue
+        return None, label
+
+    @staticmethod
+    def _format_reason(reason):
+        value, label = BMTLMQTTDaemon._parse_reason(reason)
+        if value is None:
+            return label
+        value_str = str(value)
+        if label and label.lower() != 'unknown' and label != value_str:
+            return f"{value_str} ({label})"
+        return value_str
+
+    def on_connect(self, client, userdata, flags, reason_code, properties=None):
+        rc_value, _ = self._parse_reason(reason_code)
+        if rc_value == 0:
             self.logger.info("Connected to MQTT broker")
-            
+
             # Subscribe to protocol-specific topics
             request_topics = [
                 "bmtl/request/settings/all",
@@ -160,7 +192,7 @@ class BMTLMQTTDaemon:
                     if topic and topic not in request_topics:
                         client.subscribe(topic)
                         self.logger.info(f"Subscribed to additional topic: {topic}")
-            
+
             # Send initial health status (protocol spec)
             self.send_health_status()
             # Mark as recently sent to avoid immediate duplicate in main loop
@@ -173,12 +205,23 @@ class BMTLMQTTDaemon:
             self.send_version_info()
 
         else:
-            self.logger.error(f"Failed to connect to MQTT broker with result code {rc}")
-            
-    def on_disconnect(self, client, userdata, rc):
+            self.logger.error(f"Failed to connect to MQTT broker with result code {self._format_reason(reason_code)}")
+
+    def on_disconnect(self, client, userdata, *args):
+        reason = None
+
+        if args:
+            first_arg = args[0]
+            if hasattr(first_arg, '_fields') and 'is_disconnect_packet_from_server' in getattr(first_arg, '_fields', ()):
+                reason = args[1] if len(args) > 1 else None
+            else:
+                reason = first_arg
+
+        reason_value, _ = self._parse_reason(reason)
+
         disconnect_reasons = {
             0: "Connection successful",
-            1: "Connection refused - incorrect protocol version", 
+            1: "Connection refused - incorrect protocol version",
             2: "Connection refused - invalid client identifier",
             3: "Connection refused - server unavailable",
             4: "Connection refused - bad username or password",
@@ -187,9 +230,9 @@ class BMTLMQTTDaemon:
             7: "Connection refused - not authorised",
             8: "Connection refused - reserved for future use"
         }
-        reason = disconnect_reasons.get(rc, f"Unknown disconnect reason ({rc})")
-        self.logger.warning(f"Disconnected from MQTT broker: {reason}")
-        
+        reason_text = disconnect_reasons.get(reason_value, f"Unknown disconnect reason ({self._format_reason(reason)})")
+        self.logger.warning(f"Disconnected from MQTT broker: {reason_text}")
+
     def on_message(self, client, userdata, msg):
         try:
             topic = msg.topic
@@ -869,12 +912,19 @@ class BMTLMQTTDaemon:
             return 0
             
     def setup_mqtt_client(self):
-        # Use VERSION1 for stability (VERSION2 has complex callback signatures)
-        try:
-            self.client = mqtt.Client(client_id=self.mqtt_client_id,
-                                      callback_api_version=mqtt.CallbackAPIVersion.VERSION1)
-        except AttributeError:
-            # Older paho-mqtt versions do not expose CallbackAPIVersion
+        # Prefer the modern callback API when available to avoid deprecation warnings
+        callback_version = getattr(getattr(mqtt, 'CallbackAPIVersion', object()), 'VERSION2', None)
+
+        if callback_version is not None:
+            try:
+                self.client = mqtt.Client(
+                    client_id=self.mqtt_client_id,
+                    callback_api_version=callback_version
+                )
+            except (AttributeError, TypeError):
+                # Older paho-mqtt versions do not accept callback_api_version
+                self.client = mqtt.Client(client_id=self.mqtt_client_id)
+        else:
             self.client = mqtt.Client(client_id=self.mqtt_client_id)
         
         # Set username and password if provided
