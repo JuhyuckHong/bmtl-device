@@ -604,17 +604,14 @@ class BMTLMQTTDaemon:
             update_cmd = f"{sudo_cmd} ./install.sh update"
 
             try:
-                # Open log file for writing
-                with open(update_log_path, 'w') as log_file:
-                    # Start detached process with output redirection
-                    process = subprocess.Popen(
-                        ['/bin/bash', '-c', update_cmd],
-                        stdout=log_file,
-                        stderr=subprocess.STDOUT,
-                        preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
-                        start_new_session=True
-                    )
-                    self.logger.info(f"Update process started with PID {process.pid}")
+                # Use nohup to run detached process with output redirection
+                nohup_cmd = f"cd /opt/bmtl-device && nohup {update_cmd} > {update_log_path} 2>&1 &"
+                process = subprocess.Popen(
+                    ['/bin/bash', '-c', nohup_cmd],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                self.logger.info(f"Update process started with nohup")
             except Exception as e:
                 self.logger.error(f"Failed to start update process: {e}")
                 raise
@@ -712,17 +709,14 @@ class BMTLMQTTDaemon:
             rollback_cmd = f"{sudo_cmd} ./install.sh update"
 
             try:
-                # Open log file for writing
-                with open(rollback_log_path, 'w') as log_file:
-                    # Start detached process with output redirection
-                    process = subprocess.Popen(
-                        ['/bin/bash', '-c', rollback_cmd],
-                        stdout=log_file,
-                        stderr=subprocess.STDOUT,
-                        preexec_fn=os.setsid if hasattr(os, 'setsid') else None,
-                        start_new_session=True
-                    )
-                    self.logger.info(f"Rollback process started with PID {process.pid}")
+                # Use nohup to run detached process with output redirection
+                nohup_cmd = f"cd /opt/bmtl-device && nohup {rollback_cmd} > {rollback_log_path} 2>&1 &"
+                process = subprocess.Popen(
+                    ['/bin/bash', '-c', nohup_cmd],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                self.logger.info(f"Rollback process started with nohup")
             except Exception as e:
                 self.logger.error(f"Failed to start rollback process: {e}")
                 raise
