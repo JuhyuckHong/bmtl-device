@@ -146,7 +146,7 @@ class BMTLMQTTDaemon:
                 f"bmtl/request/wiper/{self.device_id}",
                 f"bmtl/request/camera-on-off/{self.device_id}",
                 f"bmtl/sw-update/{self.device_id}",
-                "bmtl/response/settings/all"
+                f"bmtl/sw-rollback/{self.device_id}"
             ]
 
             for topic in request_topics:
@@ -163,6 +163,8 @@ class BMTLMQTTDaemon:
             
             # Send initial health status (protocol spec)
             self.send_health_status()
+            # Mark as recently sent to avoid immediate duplicate in main loop
+            self.last_health_sent = time.time()
 
             # Clear any old retained messages from incorrect device IDs
             self.clear_old_retained_messages()
@@ -236,11 +238,11 @@ class BMTLMQTTDaemon:
                     self.handle_camera_power_request()
                 elif topic == f"bmtl/sw-update/{self.device_id}":
                     self.handle_software_update()
-                elif topic == "bmtl/response/settings/all":
-                    self.handle_response_settings_all_request()
+                elif topic == f"bmtl/sw-rollback/{self.device_id}":
+                    self.handle_software_rollback(payload)
             except json.JSONDecodeError:
-                # sw-update doesn't require JSON, so only log for other topics
-                if not topic.startswith("bmtl/sw-update"):
+                # sw-update and sw-rollback don't require JSON, so only log for other topics
+                if not (topic.startswith("bmtl/sw-update") or topic.startswith("bmtl/sw-rollback")):
                     self.logger.error(f"Invalid JSON in message: {payload}")
             except Exception as e:
                 self.logger.error(f"Error processing message: {e}")
@@ -439,13 +441,48 @@ class BMTLMQTTDaemon:
         except Exception as e:
             self.logger.error(f"Error handling camera power request: {e}")
 
-    def handle_response_settings_all_request(self):
-        """Handle bmtl/response/settings/all - Send health status"""
+    def handle_software_rollback(self, payload):
+        """Handle bmtl/sw-rollback/{device_id} - Remote software rollback"""
+        import threading
+
         try:
-            self.logger.info("Received bmtl/response/settings/all request, sending health status")
-            self.send_health_status()
+            self.logger.info("🔄 Remote software rollback requested")
+
+            # Parse payload to get rollback target
+            rollback_target = "previous"  # default
+            if payload:
+                try:
+                    data = json.loads(payload)
+                    rollback_target = data.get("target", "previous")
+                except json.JSONDecodeError:
+                    pass
+
+            # Send immediate response
+            payload_response = {
+                "response_type": "sw_rollback_result",
+                "module_id": f"bmotion{self.device_id}",
+                "status": "started",
+                "message": f"Software rollback to '{rollback_target}' initiated",
+                "target": rollback_target,
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/sw-rollback/{self.device_id}", json.dumps(payload_response), qos=1)
+
+            # Run rollback in background thread to avoid blocking MQTT
+            rollback_thread = threading.Thread(target=self._execute_software_rollback, args=(rollback_target,), daemon=True)
+            rollback_thread.start()
+
         except Exception as e:
-            self.logger.error(f"Error handling response settings all request: {e}")
+            self.logger.error(f"Error handling software rollback request: {e}")
+            # Send error response
+            error_payload = {
+                "response_type": "sw_rollback_result",
+                "module_id": f"bmotion{self.device_id}",
+                "status": "error",
+                "message": f"Rollback failed to start: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/sw-rollback/{self.device_id}", json.dumps(error_payload), qos=1)
 
     def handle_software_update(self):
         """Handle bmtl/sw-update/{device_id} - Remote software update"""
@@ -554,6 +591,97 @@ class BMTLMQTTDaemon:
             except:
                 pass  # MQTT might be disconnected at this point
 
+    def _execute_software_rollback(self, target="previous"):
+        """Execute the actual software rollback process"""
+        try:
+            # Check if git is available
+            git_cmd = self._find_git_command()
+            if not git_cmd:
+                raise Exception("Git is not installed or not found in PATH")
+
+            app_dir = "/opt/bmtl-device"
+
+            # Change to application directory
+            original_cwd = os.getcwd()
+            os.chdir(app_dir)
+
+            # Determine rollback target
+            if target == "previous" or target == "HEAD~1":
+                rollback_target = "HEAD~1"
+                self.logger.info("🔄 Rolling back to previous commit...")
+            elif target.startswith("HEAD~"):
+                rollback_target = target
+                self.logger.info(f"🔄 Rolling back to {target}...")
+            elif len(target) >= 7:  # Assume it's a commit hash
+                rollback_target = target
+                self.logger.info(f"🔄 Rolling back to commit {target}...")
+            else:
+                raise Exception(f"Invalid rollback target: {target}")
+
+            # Stash any local changes first
+            self.logger.info("🔄 Stashing local changes...")
+            result = subprocess.run([git_cmd, 'stash'], capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                self.logger.warning(f"Git stash warning: {result.stderr}")
+
+            # Perform rollback using git reset --hard
+            self.logger.info(f"🔄 Performing rollback to {rollback_target}...")
+            result = subprocess.run([git_cmd, 'reset', '--hard', rollback_target],
+                                  capture_output=True, text=True, timeout=60)
+            if result.returncode != 0:
+                raise Exception(f"Git rollback failed: {result.stderr}")
+
+            # Find chmod command
+            chmod_cmd = shutil.which('chmod') or '/bin/chmod'
+            self.logger.info("🔄 Setting install.sh permissions...")
+            result = subprocess.run([chmod_cmd, '+x', './install.sh'], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                raise Exception(f"Chmod failed: {result.stderr}")
+
+            # Find sudo command
+            sudo_cmd = shutil.which('sudo') or '/usr/bin/sudo'
+            self.logger.info("🔄 Running install.sh in update mode...")
+            result = subprocess.run([sudo_cmd, './install.sh', 'update'], capture_output=True, text=True, timeout=300)
+
+            # Restore original directory
+            os.chdir(original_cwd)
+
+            if result.returncode == 0:
+                self.logger.info("✅ Software rollback completed successfully")
+                success_payload = {
+                    "response_type": "sw_rollback_result",
+                    "module_id": f"bmotion{self.device_id}",
+                    "status": "completed",
+                    "message": f"Software rollback to '{target}' completed successfully",
+                    "target": target,
+                    "timestamp": datetime.now().isoformat()
+                }
+                self.client.publish(f"bmtl/response/sw-rollback/{self.device_id}", json.dumps(success_payload), qos=1)
+
+                # Send updated version information
+                time.sleep(1)  # Brief delay to ensure rollback message is sent first
+                self.send_version_info()
+
+                # Services will be restarted by install.sh, so this daemon will restart
+
+            else:
+                raise Exception(f"Install script failed: {result.stderr}")
+
+        except Exception as e:
+            self.logger.error(f"💥 Software rollback failed: {e}")
+            error_payload = {
+                "response_type": "sw_rollback_result",
+                "module_id": f"bmotion{self.device_id}",
+                "status": "failed",
+                "message": f"Software rollback failed: {str(e)}",
+                "target": target,
+                "timestamp": datetime.now().isoformat()
+            }
+            try:
+                self.client.publish(f"bmtl/response/sw-rollback/{self.device_id}", json.dumps(error_payload), qos=1)
+            except:
+                pass  # MQTT might be disconnected at this point
+
     def _find_git_command(self):
         """Find git command in system PATH"""
         try:
@@ -657,8 +785,13 @@ class BMTLMQTTDaemon:
             }
 
     def clear_old_retained_messages(self):
-        """Clear retained messages from old/incorrect device IDs"""
+        """Clear retained messages from old/incorrect device IDs (optional cleanup)"""
         try:
+            # Only perform cleanup if explicitly enabled
+            cleanup_enabled = self.config.getboolean('device', 'cleanup_old_retained', fallback=False)
+            if not cleanup_enabled:
+                return
+
             # Get current hostname to determine what device IDs to clear
             hostname = socket.gethostname()
             if 'bmotion' in hostname.lower():
@@ -722,10 +855,10 @@ class BMTLMQTTDaemon:
             return 0
             
     def setup_mqtt_client(self):
-        # Explicitly set callback API version to avoid deprecation warning on paho-mqtt>=2
+        # Use latest callback API version to avoid deprecation warning
         try:
             self.client = mqtt.Client(client_id=self.mqtt_client_id,
-                                      callback_api_version=mqtt.CallbackAPIVersion.VERSION1)
+                                      callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
         except AttributeError:
             # Older paho-mqtt versions do not expose CallbackAPIVersion
             self.client = mqtt.Client(client_id=self.mqtt_client_id)
@@ -781,7 +914,7 @@ class BMTLMQTTDaemon:
             self.client.connect(self.mqtt_host, self.mqtt_port, 60)
             self.client.loop_start()
             
-            last_health = 0
+            last_health = getattr(self, 'last_health_sent', 0)
 
             while self.running:
                 current_time = time.time()
