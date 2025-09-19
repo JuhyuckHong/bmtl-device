@@ -129,7 +129,7 @@ class BMTLMQTTDaemon:
             self.logger.error(f"Error loading configuration: {e}")
             sys.exit(1)
             
-    def on_connect(self, client, userdata, flags, rc):
+    def on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
             self.logger.info("Connected to MQTT broker")
             
@@ -175,7 +175,7 @@ class BMTLMQTTDaemon:
         else:
             self.logger.error(f"Failed to connect to MQTT broker with result code {rc}")
             
-    def on_disconnect(self, client, userdata, rc):
+    def on_disconnect(self, client, userdata, rc, properties=None):
         disconnect_reasons = {
             0: "Connection successful",
             1: "Connection refused - incorrect protocol version", 
@@ -190,7 +190,7 @@ class BMTLMQTTDaemon:
         reason = disconnect_reasons.get(rc, f"Unknown disconnect reason ({rc})")
         self.logger.warning(f"Disconnected from MQTT broker: {reason}")
         
-    def on_message(self, client, userdata, msg):
+    def on_message(self, client, userdata, msg, properties=None):
         try:
             topic = msg.topic
             payload = msg.payload.decode('utf-8')
