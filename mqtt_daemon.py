@@ -179,6 +179,7 @@ class BMTLMQTTDaemon:
                 "bmtl/request/options/all",
                 f"bmtl/request/wiper/{self.device_id}",
                 f"bmtl/request/camera-on-off/{self.device_id}",
+                f"bmtl/request/camera-power-status/{self.device_id}",
                 f"bmtl/sw-update/{self.device_id}",
                 f"bmtl/sw-rollback/{self.device_id}",
                 f"bmtl/set/sitename/{self.device_id}",
@@ -287,6 +288,8 @@ class BMTLMQTTDaemon:
                     self.handle_wiper_request()
                 elif topic == f"bmtl/request/camera-on-off/{self.device_id}":
                     self.handle_camera_power_request()
+                elif topic == f"bmtl/request/camera-power-status/{self.device_id}":
+                    self.handle_camera_power_status_request()
                 elif topic == f"bmtl/set/sitename/{self.device_id}":
                     self.handle_sitename_set(json.loads(payload))
                 elif topic == f"bmtl/request/sw-version/{self.device_id}":
@@ -527,6 +530,86 @@ class BMTLMQTTDaemon:
             }
             self.client.publish(f"bmtl/response/camera-on-off/{self.device_id}", json.dumps(error_payload), qos=1)
             self.logger.error(f"Error handling camera power request: {e}")
+
+    def check_camera_power_status(self):
+        """Check camera power status using lsusb and gphoto2"""
+        try:
+            # First try lsusb to check for Nikon camera
+            try:
+                result = subprocess.run(['lsusb'], capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    # Check if Nikon camera is detected in USB devices
+                    if 'nikon' in result.stdout.lower():
+                        self.logger.info("Nikon camera detected via lsusb")
+                        return "on", "Camera is available via USB"
+                    else:
+                        self.logger.info("No Nikon camera found in lsusb output")
+                else:
+                    self.logger.warning(f"lsusb command failed with return code {result.returncode}")
+            except subprocess.TimeoutExpired:
+                self.logger.warning("lsusb command timed out")
+            except FileNotFoundError:
+                self.logger.warning("lsusb command not found")
+            except Exception as e:
+                self.logger.warning(f"Error running lsusb: {e}")
+
+            # Try gphoto2 to check camera connection
+            try:
+                result = subprocess.run(['gphoto2', '--auto-detect'], capture_output=True, text=True, timeout=15)
+                if result.returncode == 0:
+                    # Check if any camera is detected
+                    lines = result.stdout.strip().split('\n')
+                    # Skip header lines and check for actual camera entries
+                    camera_lines = [line for line in lines if line and not line.startswith('-') and 'Model' not in line and 'Port' not in line]
+                    if camera_lines:
+                        self.logger.info("Camera detected via gphoto2")
+                        return "on", "Camera is available"
+                    else:
+                        self.logger.info("No camera detected via gphoto2")
+                        return "off", "No camera detected"
+                else:
+                    self.logger.warning(f"gphoto2 auto-detect failed with return code {result.returncode}: {result.stderr}")
+                    return "error", f"Camera detection error: {result.stderr.strip()}"
+            except subprocess.TimeoutExpired:
+                self.logger.warning("gphoto2 command timed out")
+                return "error", "Camera detection timed out"
+            except FileNotFoundError:
+                self.logger.warning("gphoto2 command not found")
+                return "error", "gphoto2 not installed"
+            except Exception as e:
+                self.logger.warning(f"Error running gphoto2: {e}")
+                return "error", f"Camera detection error: {str(e)}"
+
+            # If both methods failed to detect camera
+            return "off", "No camera detected"
+
+        except Exception as e:
+            self.logger.error(f"Error checking camera power status: {e}")
+            return "error", f"Camera status check failed: {str(e)}"
+
+    def handle_camera_power_status_request(self):
+        """Handle bmtl/request/camera-power-status/{device_id}"""
+        try:
+            self.logger.info("Camera power status check requested")
+            power_status, message = self.check_camera_power_status()
+
+            payload = {
+                "success": True,
+                "power_status": power_status,
+                "message": message,
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/camera-power-status/{self.device_id}", json.dumps(payload), qos=1)
+            self.logger.info(f"Camera power status response sent: {power_status}")
+        except Exception as e:
+            error_payload = {
+                "success": False,
+                "power_status": "error",
+                "message": f"Camera power status check failed: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            self.client.publish(f"bmtl/response/camera-power-status/{self.device_id}", json.dumps(error_payload), qos=1)
+            self.logger.error(f"Error handling camera power status request: {e}")
 
     def handle_software_update(self):
         """Handle bmtl/sw-update/{device_id} - Remote software update"""
