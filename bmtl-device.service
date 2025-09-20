@@ -7,9 +7,9 @@ Wants=network.target
 Type=simple
 User=pi
 Group=pi
-WorkingDirectory=/opt/bmtl-device
-Environment=PATH=/opt/bmtl-device/venv/bin
-ExecStart=/opt/bmtl-device/venv/bin/python /opt/bmtl-device/mqtt_daemon.py
+WorkingDirectory=/opt/bmtl-device/current
+Environment=PATH=/opt/bmtl-device/current/venv/bin
+ExecStart=/opt/bmtl-device/current/venv/bin/python /opt/bmtl-device/current/main.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
