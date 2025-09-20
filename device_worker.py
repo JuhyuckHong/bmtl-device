@@ -8,9 +8,10 @@ import logging
 import configparser
 import subprocess
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from shared_config import config_manager
 from gphoto2_controller import GPhoto2Controller
+from utils import extract_device_id_from_hostname, get_last_capture_time, get_boot_time, get_temperature, get_current_sw_version
 
 class DeviceWorker:
     """
@@ -49,17 +50,35 @@ class DeviceWorker:
 
     def load_device_info(self):
         """워커 작동에 필요한 최소한의 디바이스 정보 로드"""
-        # BMTLDeviceMQTTHandler에서 device_id, device_location 등을 로드하는 로직과 유사
-        # 여기서는 간단하게 구현하고, 필요시 확장
         config = configparser.ConfigParser()
         config.read(self.config_path)
-        self.device_id = config.get('device', 'id', fallback='01')
+        self.device_id = config.get('device', 'id', fallback=extract_device_id_from_hostname())
         self.device_location = config.get('device', 'location', fallback='현장명')
-        self.logger.info(f"Worker loaded device info: ID={self.device_id}, Location={self.device_location}")
+        self.git_repo_url = config.get('update', 'git_repo_url', fallback="https://github.com/your-repo/bmtl-device.git") # Configurable Git URL
+        self.logger.info(f"Worker loaded device info: ID={self.device_id}, Location={self.device_location}, Git Repo={self.git_repo_url}")
 
     def run(self):
         """메인 루프: 작업 큐에서 작업을 받아 처리"""
         self.logger.info("Device worker started.")
+        
+        command_handlers = {
+            'settings_request_all': self.handle_settings_request_all,
+            'settings_request_individual': self.handle_settings_request_individual,
+            'status_request': self.handle_status_request,
+            'settings_change': self.handle_settings_change,
+            'set_sitename': self.handle_set_sitename,
+            'sw_update': self.handle_sw_update,
+            'sw_rollback': self.handle_sw_rollback,
+            'sw_version_request': self.handle_sw_version_request,
+            'reboot_all': self.handle_reboot_all,
+            'reboot_individual': self.handle_reboot_individual,
+            'options_request_individual': self.handle_options_request_individual,
+            'options_request_all': self.handle_options_request_all,
+            'wiper_request': self.handle_wiper_request,
+            'camera_power_request': self.handle_camera_power_request,
+            'health_check': self.send_health_status,
+        }
+
         while self.running:
             try:
                 task = self.task_queue.get()
@@ -71,38 +90,17 @@ class DeviceWorker:
                 
                 command = task.get('command')
                 payload = task.get('payload')
-                device_id = task.get('device_id') # Mqtt 데몬이 전달해준 device_id 사용
+                device_id = task.get('device_id')
 
-                if command == 'settings_request_all':
-                    self.handle_settings_request_all(device_id)
-                elif command == 'settings_request_individual':
-                    self.handle_settings_request_individual(device_id)
-                elif command == 'status_request':
-                    self.handle_status_request(device_id)
-                elif command == 'settings_change':
-                    self.handle_settings_change(device_id, payload)
-                elif command == 'set_sitename':
-                    self.handle_set_sitename(device_id, payload)
-                elif command == 'sw_update':
-                    self.handle_sw_update(device_id, payload)
-                elif command == 'sw_rollback':
-                    self.handle_sw_rollback(device_id, payload)
-                elif command == 'sw_version_request':
-                    self.handle_sw_version_request(device_id)
-                elif command == 'reboot_all':
-                    self.handle_reboot_all(device_id)
-                elif command == 'reboot_individual':
-                    self.handle_reboot_individual(device_id)
-                elif command == 'options_request_individual':
-                    self.handle_options_request_individual(device_id)
-                elif command == 'options_request_all':
-                    self.handle_options_request_all(device_id)
-                elif command == 'wiper_request':
-                    self.handle_wiper_request(device_id)
-                elif command == 'camera_power_request':
-                    self.handle_camera_power_request(device_id)
-                elif command == 'health_check':
-                    self.send_health_status(device_id)
+                handler = command_handlers.get(command)
+                if handler:
+                    # Handlers expect device_id and payload (if applicable)
+                    if command in ['settings_change', 'set_sitename', 'sw_update', 'sw_rollback']:
+                        handler(device_id, payload)
+                    else:
+                        handler(device_id)
+                else:
+                    self.logger.warning(f"Unknown command received: {command}")
 
             except Exception as e:
                 self.logger.error(f"Error processing task: {e}", exc_info=True)
@@ -420,7 +418,7 @@ class DeviceWorker:
             self.logger.info(f"Active version: {active_dir_name}. Updating in {os.path.basename(inactive_path)}.")
 
             # 2. Fetch new code into inactive directory
-            git_repo_url = "https://github.com/your-repo/bmtl-device.git" # FIXME: Change to your actual repo URL
+            git_repo_url = self.git_repo_url
             
             if os.path.exists(inactive_path):
                 subprocess.run(f"rm -rf {inactive_path}", shell=True, check=True)
@@ -502,24 +500,96 @@ class DeviceWorker:
             self.logger.error(f"Error handling SW version request: {e}")
 
     def send_health_status(self, device_id):
-        """헬스 상태 주기적 전송"""
+        """헬스 상태 주기적 전송
+        - 업로드 완료 후 백업 폴더의 오늘 촬영 수 집계
+        - 운영시간(start/end)과 촬영 간격으로 기대 촬영 수 계산
+        - 현재시각 기준 기대치 대비 누락 촬영 수 계산 및 보고
+        """
         try:
-            storage_path = '/opt/bmtl-device/photos'
+            # Load paths from config
+            cfg = configparser.ConfigParser()
+            cfg.read(self.config_path)
+            backup_path = cfg.get('device', 'backup_path', fallback='/opt/bmtl-device/backup')
+            # Use backup_path for storage usage and counts
+            storage_path = backup_path
+
             storage_used_percentage = 0
-            # ... (저장공간 계산 로직)
-            temperature = self.get_temperature()
-            sw_version = self.get_current_sw_version()
+            if os.path.exists(storage_path):
+                try:
+                    import shutil
+                    total, used, free = shutil.disk_usage(storage_path)
+                    storage_used_percentage = round((used / total) * 100, 2)
+                except Exception as e:
+                    self.logger.warning(f"Failed to get disk usage for {storage_path}: {e}")
+                    # Fallback to approximate calculation if disk_usage fails
+                    total_size = sum(os.path.getsize(os.path.join(storage_path, f))
+                                   for f in os.listdir(storage_path)
+                                   if os.path.isfile(os.path.join(storage_path, f)))
+                    # Assume 10GB total capacity for approximation if actual disk_usage fails
+                    storage_used_percentage = round((total_size / (10 * 1024 * 1024 * 1024)) * 100, 2)
+
+            # 오늘 촬영 수 계산 (백업 폴더 기준)
+            today = datetime.now().strftime("%Y%m%d")
             today_captures = 0
-            # ... (촬영 수 계산 로직)
+            if os.path.exists(storage_path):
+                today_captures = len([f for f in os.listdir(storage_path)
+                                    if f.startswith(f"photo_{today}")])
+
+            # 스케줄/간격/운영시간 로드
+            schedule = config_manager.read_config('schedule_settings.json') or {}
+            start_time_str = schedule.get('start_time', '00:00')
+            end_time_str = schedule.get('end_time', '23:59')
+            try:
+                interval_min = int(schedule.get('capture_interval', 60))
+                if interval_min <= 0:
+                    interval_min = 60
+            except Exception:
+                interval_min = 60
+
+            def parse_hhmm(s):
+                try:
+                    hh, mm = s.split(':')
+                    return int(hh), int(mm)
+                except Exception:
+                    return 0, 0
+
+            now_dt = datetime.now()
+            sh, sm = parse_hhmm(start_time_str)
+            eh, em = parse_hhmm(end_time_str)
+            start_dt = now_dt.replace(hour=sh, minute=sm, second=0, microsecond=0)
+            end_dt = now_dt.replace(hour=eh, minute=em, second=0, microsecond=0)
+            if end_dt <= start_dt:
+                # Overnight window: treat end as next day (e.g., 20:00 -> 06:00)
+                end_dt = end_dt + timedelta(days=1)
+
+            total_slots = 0
+            expected_by_now = 0
+            if interval_min > 0:
+                window_seconds = max(0, (end_dt - start_dt).total_seconds())
+                total_slots = int(window_seconds // (interval_min * 60)) + (1 if window_seconds >= 0 else 0)
+
+                if now_dt < start_dt:
+                    expected_by_now = 0
+                elif now_dt >= end_dt:
+                    expected_by_now = total_slots
+                else:
+                    elapsed = (now_dt - start_dt).total_seconds()
+                    expected_by_now = int(elapsed // (interval_min * 60)) + 1
+
+            missed = max(0, expected_by_now - today_captures)
 
             payload = {
-                "module_id": f"bmotion{device_id}", "status": "online",
-                "storage_used": storage_used_percentage, "temperature": temperature,
-                "last_capture_time": self.get_last_capture_time(),
-                "last_boot_time": self.get_boot_time(),
+                "module_id": f"bmotion{device_id}",
+                "status": "online",
+                "storage_used": storage_used_percentage,
+                "temperature": get_temperature(),
+                "last_capture_time": get_last_capture_time(),
+                "last_boot_time": get_boot_time(),
                 "site_name": self.device_location,
+                "today_total_captures": total_slots,
                 "today_captured_count": today_captures,
-                "sw_version": sw_version,
+                "missed_captures": missed,
+                "sw_version": get_current_sw_version(),
                 "timestamp": datetime.now().isoformat()
             }
             self._publish(f"bmtl/status/health/{device_id}", payload)
@@ -530,14 +600,10 @@ class DeviceWorker:
     #                  Helper methods from handler
     # ##################################################################
     def get_last_capture_time(self):
-        # ... (구현은 device_mqtt_handler.py와 동일)
-        return None
+        return get_last_capture_time()
     def get_boot_time(self):
-        # ... (구현은 device_mqtt_handler.py와 동일)
-        return datetime.now().isoformat()
+        return get_boot_time()
     def get_temperature(self):
-        # ... (구현은 device_mqtt_handler.py와 동일)
-        return 25.0
+        return get_temperature()
     def get_current_sw_version(self):
-        # ... (구현은 device_mqtt_handler.py와 동일)
-        return "unknown"
+        return get_current_sw_version()

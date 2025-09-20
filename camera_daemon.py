@@ -12,6 +12,7 @@ import inotify_simple
 from datetime import datetime, timedelta
 from pathlib import Path
 from shared_config import config_manager, read_camera_config, read_camera_command, read_camera_schedule
+import configparser
 
 class CameraController:
     """gphoto2 camera controller with configuration management"""
@@ -19,10 +20,16 @@ class CameraController:
     def __init__(self):
         self.logger = logging.getLogger('CameraController')
         self.current_config = {}
-        self.photo_storage_path = '/opt/bmtl-device/photos'
+        # Load storage paths from config
+        self.config_path = "/etc/bmtl-device/config.ini"
+        cfg = configparser.ConfigParser()
+        cfg.read(self.config_path)
+        self.upload_path = cfg.get('device', 'upload_path', fallback='/opt/bmtl-device/upload')
+        self.backup_path = cfg.get('device', 'backup_path', fallback='/opt/bmtl-device/backup')
 
-        # Create photos directory
-        os.makedirs(self.photo_storage_path, exist_ok=True)
+        # Ensure directories exist
+        os.makedirs(self.upload_path, exist_ok=True)
+        os.makedirs(self.backup_path, exist_ok=True)
 
         # Check if camera is connected
         self.check_camera_connection()
@@ -68,7 +75,8 @@ class CameraController:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"photo_{timestamp}.jpg"
 
-            filepath = os.path.join(self.photo_storage_path, filename)
+            # Save to upload folder first for Dropbox sync
+            filepath = os.path.join(self.upload_path, filename)
 
             # Capture photo
             cmd = ['gphoto2', '--capture-image-and-download', '--filename', filepath]
@@ -83,7 +91,7 @@ class CameraController:
             }
 
             if result.returncode == 0:
-                self.logger.info(f"Photo captured successfully: {filename}")
+                self.logger.info(f"Photo captured successfully to upload folder: {filename}")
                 # Update capture statistics
                 self.update_capture_stats(True)
             else:
@@ -180,9 +188,10 @@ class CameraController:
             return {
                 'connected': result.returncode == 0,
                 'current_config': self.current_config,
-                'photos_taken': len([f for f in os.listdir(self.photo_storage_path)
-                                   if f.endswith(('.jpg', '.jpeg', '.raw'))]),
-                'storage_path': self.photo_storage_path,
+                # Count photos that have been backed up (post-upload)
+                'photos_taken': len([f for f in os.listdir(self.backup_path)
+                                   if f.lower().endswith(('.jpg', '.jpeg', '.raw'))]),
+                'storage_path': self.backup_path,
                 'timestamp': datetime.now().isoformat()
             }
 
@@ -205,6 +214,7 @@ class BMTLCameraDaemon:
         self.camera = CameraController()
         self.last_command_processed = None
         self.schedule_thread = None
+        self.upload_mover_thread = None
 
         self.setup_logging()
 
@@ -389,6 +399,10 @@ class BMTLCameraDaemon:
             self.schedule_thread = threading.Thread(target=self.run_scheduled_tasks, daemon=True)
             self.schedule_thread.start()
 
+            # Start upload → backup mover thread
+            self.upload_mover_thread = threading.Thread(target=self.move_uploaded_files_loop, daemon=True)
+            self.upload_mover_thread.start()
+
             self.logger.info("Camera daemon started")
 
             # Main loop - watch for config changes
@@ -398,6 +412,67 @@ class BMTLCameraDaemon:
             self.logger.error(f"Error in main loop: {e}")
         finally:
             self.logger.info("Camera daemon stopped")
+
+    # -------------------------
+    # Upload-to-backup movement
+    # -------------------------
+    def _file_size_stable(self, path, window_sec=30):
+        """Return True if file size is stable for window_sec seconds."""
+        try:
+            size1 = os.path.getsize(path)
+            time.sleep(window_sec)
+            size2 = os.path.getsize(path)
+            return size1 == size2
+        except FileNotFoundError:
+            return False
+        except Exception as e:
+            self.logger.warning(f"Size check failed for {path}: {e}")
+            return False
+
+    def move_uploaded_files_loop(self):
+        """Periodically move files from upload to backup after they settle (assumed uploaded)."""
+        # Read paths again (in case of config changes at runtime)
+        cfg = configparser.ConfigParser()
+        cfg.read(self.camera.config_path)
+        upload_dir = getattr(self.camera, 'upload_path', '/opt/bmtl-device/upload')
+        backup_dir = getattr(self.camera, 'backup_path', '/opt/bmtl-device/backup')
+
+        settle_seconds = 30
+        scan_interval = 20
+
+        self.logger.info(f"Starting upload mover: {upload_dir} -> {backup_dir}")
+        while self.running:
+            try:
+                if not os.path.exists(upload_dir):
+                    os.makedirs(upload_dir, exist_ok=True)
+                if not os.path.exists(backup_dir):
+                    os.makedirs(backup_dir, exist_ok=True)
+
+                for name in os.listdir(upload_dir):
+                    src = os.path.join(upload_dir, name)
+                    if not os.path.isfile(src):
+                        continue
+                    if not name.lower().endswith(('.jpg', '.jpeg', '.raw')):
+                        continue
+
+                    # Only move if file appears settled
+                    mtime_age = time.time() - os.path.getmtime(src)
+                    if mtime_age < settle_seconds:
+                        continue
+                    if not self._file_size_stable(src, window_sec=settle_seconds):
+                        continue
+
+                    dst = os.path.join(backup_dir, name)
+                    try:
+                        os.replace(src, dst)
+                        self.logger.info(f"Moved uploaded file to backup: {name}")
+                    except Exception as move_err:
+                        self.logger.warning(f"Failed to move {src} -> {dst}: {move_err}")
+
+            except Exception as e:
+                self.logger.error(f"Error in upload mover loop: {e}")
+            finally:
+                time.sleep(scan_interval)
 
 
 if __name__ == "__main__":
