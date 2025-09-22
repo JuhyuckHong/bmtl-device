@@ -3,6 +3,7 @@
 import os
 import sys
 import json
+import copy
 import time
 import signal
 import logging
@@ -13,6 +14,51 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from shared_config import config_manager, read_camera_config, read_camera_command, read_camera_schedule
 import configparser
+
+CAMERA_CONFIG_FILE = 'camera_config.json'
+CAMERA_SCHEDULE_FILE = 'camera_schedule.json'
+CAMERA_STATS_FILE = 'camera_stats.json'
+CAMERA_STATUS_FILE = 'camera_status.json'
+CAMERA_RESULT_FILE = 'camera_result.json'
+
+DEFAULT_CAMERA_CONFIG = {
+    'iso': 'auto',
+    'shutterspeed': '1/60',
+    'aperture': 'f/5.6',
+    'whitebalance': 'Auto',
+}
+
+DEFAULT_CAMERA_SCHEDULE = {
+    'enabled': False,
+    'type': 'interval',
+    'interval_minutes': 60,
+    'last_capture': None,
+}
+
+DEFAULT_CAMERA_STATS = {
+    'date': None,
+    'total_captures': 0,
+    'successful_captures': 0,
+    'missed_captures': 0,
+    'last_capture_time': None,
+    'last_successful_capture': None,
+}
+
+DEFAULT_CAMERA_STATUS = {
+    'connected': False,
+    'current_config': {},
+    'photos_taken': 0,
+    'storage_path': '',
+    'timestamp': None,
+}
+
+DEFAULT_CAMERA_RESULT = {
+    'success': False,
+    'filename': None,
+    'filepath': None,
+    'error': None,
+    'timestamp': None,
+}
 
 class CameraController:
     """gphoto2 camera controller with configuration management"""
@@ -226,6 +272,8 @@ class BMTLCameraDaemon:
             self.logger.error(f"Failed to create config directory: {e}")
             sys.exit(1)
 
+        self.ensure_default_configs()
+
         self.logger.info("BMTL Camera Daemon initialized")
 
     def setup_logging(self):
@@ -241,6 +289,27 @@ class BMTLCameraDaemon:
             ]
         )
         self.logger = logging.getLogger('BMTLCameraDaemon')
+
+    def ensure_default_configs(self):
+        """Seed default camera config/state files if they do not exist."""
+        defaults = (
+            (CAMERA_CONFIG_FILE, DEFAULT_CAMERA_CONFIG),
+            (CAMERA_SCHEDULE_FILE, DEFAULT_CAMERA_SCHEDULE),
+            (CAMERA_STATS_FILE, DEFAULT_CAMERA_STATS),
+            (CAMERA_STATUS_FILE, DEFAULT_CAMERA_STATUS),
+            (CAMERA_RESULT_FILE, DEFAULT_CAMERA_RESULT),
+        )
+
+        for filename, template in defaults:
+            if config_manager.config_exists(filename):
+                continue
+
+            try:
+                config_manager.write_config(filename, copy.deepcopy(template))
+                self.logger.info(f"Seeded default camera config file: {filename}")
+            except Exception as err:
+                self.logger.warning(f"Failed to seed default config {filename}: {err}")
+
 
     def watch_config_files(self):
         """Watch for configuration file changes using inotify"""
