@@ -210,7 +210,8 @@ fi
 
 # Update device ID and sitename in config
 sudo sed -i "s/^id = .*/id = $DEVICE_ID/" /etc/bmtl-device/config.ini
-sudo sed -i "s/^location = .*/sitename = $HOSTNAME/" /etc/bmtl-device/config.ini
+# Ensure sitename reflects the device hostname
+sudo sed -i "s/^sitename = .*/sitename = $HOSTNAME/" /etc/bmtl-device/config.ini
 
 echo "📝 Configuration updated:"
 echo "   Device ID: $DEVICE_ID"

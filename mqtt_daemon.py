@@ -173,10 +173,26 @@ class MqttDaemon:
         except (AttributeError, TypeError):
             self.client = mqtt.Client(client_id=self.mqtt_client_id)
 
+        # Forward paho-mqtt internal logs to our logger for better diagnostics
+        try:
+            self.client.enable_logger(self.logger)
+        except Exception:
+            pass
+
         if self.mqtt_username and self.mqtt_password:
             self.client.username_pw_set(self.mqtt_username, self.mqtt_password)
         if self.mqtt_use_tls:
-            self.client.tls_set(cert_reqs=ssl.CERT_REQUIRED, tls_version=ssl.PROTOCOL_TLS)
+            # Prefer a modern TLS configuration; fall back if not available
+            tls_version = getattr(ssl, 'PROTOCOL_TLS_CLIENT', None) or getattr(ssl, 'PROTOCOL_TLSv1_2', ssl.PROTOCOL_TLS)
+            try:
+                self.client.tls_set(cert_reqs=ssl.CERT_REQUIRED, tls_version=tls_version)
+            except Exception as e:
+                # Log and retry with default settings to avoid immediate crash
+                self.logger.warning(f"TLS configuration failed ({e}); retrying with default TLS")
+                try:
+                    self.client.tls_set()
+                except Exception as e2:
+                    self.logger.error(f"TLS reconfiguration failed: {e2}")
 
         self.client.on_connect = self.on_connect
         self.client.on_disconnect = self.on_disconnect

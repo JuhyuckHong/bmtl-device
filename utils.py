@@ -98,8 +98,23 @@ def get_current_sw_version():
         )
         if result.returncode == 0:
             return result.stdout.strip()[:12]  # 앞 12자리만
-        else:
-            return "unknown"
+        # Fallback to VERSION file when git is unavailable
+        version_file = os.path.join("/opt/bmtl-device/current", "VERSION")
+        if os.path.exists(version_file):
+            try:
+                with open(version_file, 'r') as f:
+                    return f.read().strip()
+            except Exception:
+                pass
+        return "unknown"
     except Exception as e:
+        # If git is missing or path invalid, attempt VERSION file fallback
+        try:
+            version_file = os.path.join("/opt/bmtl-device/current", "VERSION")
+            if os.path.exists(version_file):
+                with open(version_file, 'r') as f:
+                    return f.read().strip()
+        except Exception:
+            pass
         logger.warning(f"Failed to get SW version: {e}")
         return "unknown"
