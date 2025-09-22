@@ -5,6 +5,68 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+SLOT_PRIMARY="v1"
+SLOT_SECONDARY="v2"
+
+determine_slots() {
+    local current_link="$1"
+
+    if [ -L "$current_link" ]; then
+        local target
+        target=$(readlink -f "$current_link")
+        local basename_target
+        basename_target=$(basename "$target")
+
+        case "$basename_target" in
+            "$SLOT_PRIMARY")
+                ACTIVE_SLOT="$SLOT_PRIMARY"
+                INACTIVE_SLOT="$SLOT_SECONDARY"
+                ;;
+            "$SLOT_SECONDARY")
+                ACTIVE_SLOT="$SLOT_SECONDARY"
+                INACTIVE_SLOT="$SLOT_PRIMARY"
+                ;;
+            *)
+                echo "Unknown active slot '$basename_target'. Please repair /opt/bmtl-device/current." >&2
+                exit 1
+                ;;
+        esac
+    else
+        ACTIVE_SLOT="$SLOT_PRIMARY"
+        INACTIVE_SLOT="$SLOT_SECONDARY"
+    fi
+
+    ACTIVE_DIR="$APP_DIR/$ACTIVE_SLOT"
+    INACTIVE_DIR="$APP_DIR/$INACTIVE_SLOT"
+}
+
+sync_release() {
+    local source_dir="$1"
+    local target_dir="$2"
+
+    if [ "$(readlink -f "$source_dir")" = "$(readlink -f "$target_dir")" ]; then
+        echo "⚠️  Source ($source_dir) and target ($target_dir) are the same directory."
+        echo "    Please run this installer from a separate release checkout (e.g., git clone into /tmp or ~/bmtl-device)."
+        exit 1
+    fi
+
+    echo "📁 Syncing application files to $target_dir"
+    rm -rf "$target_dir"
+    mkdir -p "$target_dir"
+
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a --delete \
+            --exclude 'venv/' \
+            --exclude '__pycache__/' \
+            --exclude '*.pyc' \
+            "$source_dir"/ "$target_dir"/
+    else
+        (cd "$source_dir" && tar cf - . --exclude='venv' --exclude='__pycache__' --exclude='*.pyc') | (cd "$target_dir" && tar xf -)
+    fi
+}
+
 # Enable safety mode for updates
 BACKUP_DIR="/opt/bmtl-device-backup"
 UPDATE_MODE="${1:-install}"  # install, update, or rollback
@@ -78,48 +140,51 @@ sudo apt update && sudo apt upgrade -y
 
 # Install required packages
 echo "📦 Installing dependencies..."
-sudo apt install -y python3 python3-pip python3-venv git gphoto2 libgphoto2-dev python3-rpi.gpio
+sudo apt install -y python3 python3-pip python3-venv git gphoto2 libgphoto2-dev python3-rpi.gpio rsync
 
 # Create application directory
 APP_DIR="/opt/bmtl-device"
+CURRENT_LINK="$APP_DIR/current"
+
 echo "📁 Creating application directory: $APP_DIR"
-sudo mkdir -p $APP_DIR
-sudo chown $USER:$USER $APP_DIR
+sudo mkdir -p "$APP_DIR"
+sudo chown "$USER":"$(id -gn)" "$APP_DIR"
 
-# Check if this is an update (app directory already exists with files)
-if [ -d "$APP_DIR/venv" ] && [ -f "$APP_DIR/mqtt_daemon.py" ]; then
-    echo "🔄 Updating existing installation..."
-    # Copy updated files
-    cp -f *.py $APP_DIR/ 2>/dev/null || true
-    cp -f *.service $APP_DIR/ 2>/dev/null || true
-    cp -f *.ini $APP_DIR/ 2>/dev/null || true
-    cp -f *.sh $APP_DIR/ 2>/dev/null || true
-    cp -f VERSION $APP_DIR/ 2>/dev/null || true
-    cp -f .env.example $APP_DIR/ 2>/dev/null || true
+# Determine active/inactive slots for blue/green layout
+determine_slots "$CURRENT_LINK"
 
-    # Ensure both services are stopped and disabled during update
+if [ "$UPDATE_MODE" = "update" ]; then
+    TARGET_DIR="$INACTIVE_DIR"
+    echo "🔄 Updating inactive slot: $(basename "$TARGET_DIR")"
+
     echo "🔄 Ensuring services are stopped for update..."
     sudo systemctl stop bmtl-device bmtl-camera 2>/dev/null || true
     sudo systemctl disable bmtl-device bmtl-camera 2>/dev/null || true
 else
-    echo "📋 Installing fresh copy..."
-    # Copy all application files
-    cp -r . $APP_DIR/
+    TARGET_DIR="$ACTIVE_DIR"
+    echo "📋 Installing fresh copy into $(basename "$TARGET_DIR")"
 fi
-cd $APP_DIR
 
-# Create Python virtual environment (if not exists) or reuse existing
-if [ ! -d "venv" ]; then
-    echo "🐍 Creating Python virtual environment..."
-    python3 -m venv venv
-else
-    echo "🐍 Using existing Python virtual environment..."
-fi
-source venv/bin/activate
+sync_release "$SCRIPT_DIR" "$TARGET_DIR"
+mkdir -p "$TARGET_DIR/logs"
 
-# Install Python dependencies
+echo "🐍 Creating Python virtual environment..."
+rm -rf "$TARGET_DIR/venv"
+python3 -m venv "$TARGET_DIR/venv"
+
+source "$TARGET_DIR/venv/bin/activate"
+
 echo "📦 Installing Python dependencies..."
-pip install paho-mqtt configparser python-dotenv inotify-simple
+pip install --upgrade pip
+pip install -r "$TARGET_DIR/requirements.txt"
+
+echo "🧪 Validating bytecode compilation..."
+"$TARGET_DIR/venv/bin/python" -m compileall "$TARGET_DIR"
+
+deactivate
+
+echo "🔗 Updating current symlink"
+ln -sfn "$TARGET_DIR" "$CURRENT_LINK"
 
 # Create config directory
 sudo mkdir -p /etc/bmtl-device
@@ -140,7 +205,7 @@ fi
 
 # Copy and customize configuration
 if [ ! -f /etc/bmtl-device/config.ini ]; then
-    sudo cp config.ini /etc/bmtl-device/
+    sudo cp "$TARGET_DIR/config.ini" /etc/bmtl-device/
 fi
 
 # Update device ID and sitename in config
@@ -204,11 +269,11 @@ if [[ "$MQTT_STATUS" == "active" && "$CAMERA_STATUS" == "active" ]]; then
     echo "   sudo journalctl -u bmtl-camera -f    # Camera daemon"
     echo ""
     echo "📝 To view application logs:"
-    echo "   tail -f $APP_DIR/logs/mqtt_daemon.log"
-    echo "   tail -f $APP_DIR/logs/camera_daemon.log"
+    echo "   tail -f $CURRENT_LINK/logs/mqtt_daemon.log"
+    echo "   tail -f $CURRENT_LINK/logs/camera_daemon.log"
     echo ""
     echo "⚙️  Configuration file: /etc/bmtl-device/config.ini"
-    echo "⚙️  Environment file: $APP_DIR/.env"
+    echo "⚙️  Environment file: $CURRENT_LINK/.env"
     echo "📂 Camera config directory: /tmp/bmtl-config"
 
     # Disable error trap since we succeeded
