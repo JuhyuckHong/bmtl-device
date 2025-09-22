@@ -118,8 +118,49 @@ class MqttDaemon:
         else:
             self.logger.error(f"Failed to connect to MQTT broker with result code {rc}")
 
-    def on_disconnect(self, client, userdata, rc):
-        self.logger.warning(f"Disconnected from MQTT broker with reason code {rc}")
+    def on_disconnect(self, client, userdata, disconnect_flags=None, reason_code=None, properties=None):
+        if reason_code is None and properties is None and isinstance(disconnect_flags, int):
+            reason_code = disconnect_flags
+            disconnect_flags = None
+
+        from_server = getattr(disconnect_flags, 'is_disconnect_packet_from_server', None)
+        reason_text = self._format_reason_code(reason_code)
+
+        if from_server is None:
+            self.logger.warning('Disconnected from MQTT broker (reason=%s)', reason_text)
+        else:
+            self.logger.warning(
+                'Disconnected from MQTT broker (server_packet=%s, reason=%s)',
+                from_server,
+                reason_text,
+            )
+
+        is_failure = False
+        if hasattr(reason_code, 'is_failure'):
+            is_failure = reason_code.is_failure
+        elif reason_code not in (None, 0, mqtt.MQTT_ERR_SUCCESS):
+            is_failure = True
+
+        if is_failure:
+            self.logger.info('MQTT client will attempt to reconnect if configured.')
+
+        if properties:
+            self.logger.debug('Disconnect properties: %s', properties)
+
+    def _format_reason_code(self, reason_code):
+        if reason_code is None:
+            return 'unknown'
+
+        if hasattr(reason_code, 'getName'):
+            return reason_code.getName()
+
+        if hasattr(reason_code, 'name'):
+            return reason_code.name
+
+        if hasattr(reason_code, 'value'):
+            return str(reason_code.value)
+
+        return str(reason_code)
 
     def on_message(self, client, userdata, msg):
         try:
