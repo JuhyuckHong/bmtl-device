@@ -22,7 +22,6 @@ response_queue = None
 def shutdown_handler(signum, frame):
     """Terminate child processes and flush queues."""
     logging.info("Shutdown signal received. Terminating processes.")
-    global task_queue, response_queue
     if task_queue is not None:
         try:
             task_queue.put_nowait(None)
@@ -44,7 +43,6 @@ def shutdown_handler(signum, frame):
     sys.exit(0)
 
 if __name__ == "__main__":
-    global task_queue, response_queue
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 

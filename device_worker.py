@@ -516,7 +516,8 @@ class DeviceWorker:
             self.logger.error(f"Error handling SW version request: {e}")
 
     def send_health_status(self, device_id):
-        """Summarise recent capture information for diagnostics."""
+        """
+        Summarise recent capture information for diagnostics.
         - After uploads complete, images move to backup storage for counting.
         - Operating window start/end times are required for scheduling.
         - Retention limits ensure old captures are recycled safely.
