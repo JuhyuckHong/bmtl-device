@@ -16,9 +16,9 @@ import paho.mqtt.client as mqtt
 
 class MqttDaemon:
     """
-    MQTT 브로커와의 통신을 전담하는 데몬.
-    - Worker 프로세스로부터 받은 메시지를 MQTT 브로커에 발행.
-    - 구독 중인 토픽에서 메시지를 수신하면 Worker 프로세스에 작업을 전달.
+    Handles MQTT connectivity tasks for the device.
+    - Publishes worker responses to the MQTT broker.
+    - Forwards subscribed MQTT messages to the worker process.
     """
 
     def __init__(self, task_queue, response_queue):
@@ -84,6 +84,13 @@ class MqttDaemon:
             self.mqtt_username = os.getenv('MQTT_USERNAME', self.config.get('mqtt', 'username', fallback=''))
             self.mqtt_password = os.getenv('MQTT_PASSWORD', self.config.get('mqtt', 'password', fallback=''))
             self.mqtt_use_tls = os.getenv('MQTT_USE_TLS', self.config.get('mqtt', 'use_tls', fallback='false')).lower() == 'true'
+            self.mqtt_force_plain = os.getenv('MQTT_FORCE_PLAIN', self.config.get('mqtt', 'force_plain', fallback='false')).lower() == 'true'
+            if not self.mqtt_use_tls and not self.mqtt_force_plain and self.mqtt_port in (8883, 8884):
+                self.logger.warning(
+                    "Port %s typically expects TLS; enabling TLS automatically. Set MQTT_FORCE_PLAIN=true or force_plain=true to override.",
+                    self.mqtt_port,
+                )
+                self.mqtt_use_tls = True
             # Transport selection: 'tcp' (default) or 'websockets'
             self.mqtt_transport = os.getenv('MQTT_TRANSPORT', self.config.get('mqtt', 'transport', fallback='tcp')).lower()
             if self.mqtt_transport not in ('tcp', 'websockets'):
@@ -104,8 +111,11 @@ class MqttDaemon:
             self.logger.error(f"Error loading configuration: {e}")
             sys.exit(1)
 
-    def on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
+    def on_connect(self, client, userdata, flags, reason_code=None, properties=None):
+        if reason_code is None:
+            reason_code = mqtt.MQTT_ERR_SUCCESS
+
+        if self._reason_code_is_success(reason_code):
             self.connected = True
             self.reconnect_delay = 5  # Reset reconnect delay on successful connection
             self.logger.info("Connected to MQTT broker")
@@ -129,11 +139,15 @@ class MqttDaemon:
                 client.subscribe(topic, qos=2)
                 self.logger.info(f"Subscribed to {topic}")
 
-            # 초기 헬스 상태 요청
+            # Request initial state
             self.task_queue.put({'command': 'health_check', 'device_id': self.device_id})
+
+            if properties:
+                self.logger.debug('Connect properties: %s', properties)
         else:
             self.connected = False
-            self.logger.error(f"Failed to connect to MQTT broker with result code {rc}")
+            reason_text = self._format_reason_code(reason_code)
+            self.logger.error(f"Failed to connect to MQTT broker with result code {reason_text}")
 
     def on_disconnect(self, client, userdata, disconnect_flags=None, reason_code=None, properties=None):
         self.connected = False
@@ -166,6 +180,15 @@ class MqttDaemon:
 
         if properties:
             self.logger.debug('Disconnect properties: %s', properties)
+
+    def _reason_code_is_success(self, reason_code):
+        if reason_code is None:
+            return False
+
+        if hasattr(reason_code, "is_failure"):
+            return not reason_code.is_failure
+
+        return reason_code in (0, mqtt.MQTT_ERR_SUCCESS)
 
     def _format_reason_code(self, reason_code):
         if reason_code is None:
@@ -251,7 +274,7 @@ class MqttDaemon:
             elif topic == f"bmtl/request/camera-on-off/{self.device_id}":
                 task['command'] = 'camera_power_request'
             else:
-                # 처리할 수 없는 토픽은 무시
+                # Ignore topics that are not handled
                 return
 
             self.task_queue.put(task)
@@ -320,14 +343,13 @@ class MqttDaemon:
             self.client.loop_start()
 
             last_health_update = 0
-            health_interval = 60  # 1분마다 헬스 상태 전송 요청
+            health_interval = 60  # Request device health once per minute
 
             while self.running:
                 # Check connection and attempt reconnection if needed
                 if not self.connected:
                     self.reconnect_to_broker()
-
-                # Worker가 보낸 응답 메시지를 MQTT로 발행 (only if connected)
+                # Publish worker responses back to MQTT (only if connected)
                 if not self.response_queue.empty() and self.connected:
                     try:
                         response = self.response_queue.get()
@@ -341,8 +363,7 @@ class MqttDaemon:
                             self.logger.warning(f"Failed to publish message to {response['topic']}")
                     except Exception as e:
                         self.logger.error(f"Error publishing message: {e}")
-
-                # 주기적 헬스 상태 전송 요청 (only if connected)
+                # Trigger periodic device health request (only if connected)
                 if self.connected and time.time() - last_health_update >= health_interval:
                     self.task_queue.put({'command': 'health_check', 'device_id': self.device_id})
                     last_health_update = time.time()
@@ -356,8 +377,7 @@ class MqttDaemon:
                 self.client.loop_stop()
                 self.client.disconnect()
             self.logger.info("MQTT daemon stopped")
-
-# main.py에서 직접 클래스를 가져와 사용하므로, 이 파일 자체는 직접 실행되지 않음
+# Example invocation from main.py kept for local testing only
 # if __name__ == "__main__":
 #     # This part is for testing purposes only
 #     from multiprocessing import Queue
