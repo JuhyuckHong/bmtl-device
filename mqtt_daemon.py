@@ -29,7 +29,11 @@ class MqttDaemon:
         self.log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
         self.client = None
         self.running = True
-        
+        self.connected = False
+        self.reconnect_delay = 5  # Start with 5 seconds
+        self.max_reconnect_delay = 300  # Max 5 minutes
+        self.last_disconnect_time = 0
+
         self.setup_logging()
         self.load_config()
         self.device_id = self.extract_device_id_from_hostname()
@@ -92,6 +96,8 @@ class MqttDaemon:
 
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
+            self.connected = True
+            self.reconnect_delay = 5  # Reset reconnect delay on successful connection
             self.logger.info("Connected to MQTT broker")
             topics_to_subscribe = [
                 "bmtl/request/settings/all",
@@ -112,13 +118,17 @@ class MqttDaemon:
             for topic in topics_to_subscribe:
                 client.subscribe(topic, qos=2)
                 self.logger.info(f"Subscribed to {topic}")
-            
+
             # 초기 헬스 상태 요청
             self.task_queue.put({'command': 'health_check', 'device_id': self.device_id})
         else:
+            self.connected = False
             self.logger.error(f"Failed to connect to MQTT broker with result code {rc}")
 
     def on_disconnect(self, client, userdata, disconnect_flags=None, reason_code=None, properties=None):
+        self.connected = False
+        self.last_disconnect_time = time.time()
+
         if reason_code is None and properties is None and isinstance(disconnect_flags, int):
             reason_code = disconnect_flags
             disconnect_flags = None
@@ -141,8 +151,8 @@ class MqttDaemon:
         elif reason_code not in (None, 0, mqtt.MQTT_ERR_SUCCESS):
             is_failure = True
 
-        if is_failure:
-            self.logger.info('MQTT client will attempt to reconnect if configured.')
+        if is_failure and self.running:
+            self.logger.info(f'MQTT client will attempt to reconnect in {self.reconnect_delay} seconds.')
 
         if properties:
             self.logger.debug('Disconnect properties: %s', properties)
@@ -161,6 +171,30 @@ class MqttDaemon:
             return str(reason_code.value)
 
         return str(reason_code)
+
+    def reconnect_to_broker(self):
+        """Attempt to reconnect to MQTT broker with exponential backoff"""
+        if not self.running or self.connected:
+            return
+
+        current_time = time.time()
+        if current_time - self.last_disconnect_time < self.reconnect_delay:
+            return
+
+        try:
+            self.logger.info(f"Attempting to reconnect to MQTT broker at {self.mqtt_host}:{self.mqtt_port}")
+            if self.client:
+                self.client.reconnect()
+            else:
+                self.setup_mqtt_client()
+                self.client.connect(self.mqtt_host, self.mqtt_port, 60)
+
+        except Exception as e:
+            self.logger.error(f"Reconnection attempt failed: {e}")
+            # Exponential backoff with jitter
+            self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+            self.logger.info(f"Next reconnection attempt in {self.reconnect_delay} seconds")
+            self.last_disconnect_time = current_time
 
     def on_message(self, client, userdata, msg):
         try:
@@ -252,24 +286,34 @@ class MqttDaemon:
 
         try:
             self.logger.info(f"Connecting to MQTT broker at {self.mqtt_host}:{self.mqtt_port}")
-            self.client.connect(self.mqtt_host, self.mqtt_port, 60)
+            self.client.connect(self.mqtt_host, self.mqtt_port, 120)  # Increased keepalive to 120s
             self.client.loop_start()
 
             last_health_update = 0
             health_interval = 60  # 1분마다 헬스 상태 전송 요청
 
             while self.running:
-                # Worker가 보낸 응답 메시지를 MQTT로 발행
-                if not self.response_queue.empty():
-                    response = self.response_queue.get()
-                    self.client.publish(
-                        response['topic'],
-                        response['payload'],
-                        qos=response.get('qos', 1)
-                    )
+                # Check connection and attempt reconnection if needed
+                if not self.connected:
+                    self.reconnect_to_broker()
 
-                # 주기적 헬스 상태 전송 요청
-                if time.time() - last_health_update >= health_interval:
+                # Worker가 보낸 응답 메시지를 MQTT로 발행 (only if connected)
+                if not self.response_queue.empty() and self.connected:
+                    try:
+                        response = self.response_queue.get()
+                        result = self.client.publish(
+                            response['topic'],
+                            response['payload'],
+                            qos=response.get('qos', 1)
+                        )
+                        # Check if publish was successful
+                        if not result.is_published():
+                            self.logger.warning(f"Failed to publish message to {response['topic']}")
+                    except Exception as e:
+                        self.logger.error(f"Error publishing message: {e}")
+
+                # 주기적 헬스 상태 전송 요청 (only if connected)
+                if self.connected and time.time() - last_health_update >= health_interval:
                     self.task_queue.put({'command': 'health_check', 'device_id': self.device_id})
                     last_health_update = time.time()
 
