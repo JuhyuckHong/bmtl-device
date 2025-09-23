@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import time
+import sys
 from multiprocessing import Process, Queue
 import signal
 import logging
@@ -15,18 +16,35 @@ logging.basicConfig(
 )
 
 processes = []
+task_queue = None
+response_queue = None
 
 def shutdown_handler(signum, frame):
-    """프로세스 종료 핸들러"""
+    """Terminate child processes and flush queues."""
     logging.info("Shutdown signal received. Terminating processes.")
+    global task_queue, response_queue
+    if task_queue is not None:
+        try:
+            task_queue.put_nowait(None)
+        except Exception:
+            pass
+    if response_queue is not None:
+        try:
+            response_queue.put_nowait(None)
+        except Exception:
+            pass
     for p in processes:
         if p.is_alive():
-            p.terminate() # SIGTERM 전송
-            p.join(5) # 5초간 기다림
+            p.join(5)
+    for p in processes:
+        if p.is_alive():
+            p.terminate()
+            p.join(5)
     logging.info("All processes terminated.")
-    exit(0)
+    sys.exit(0)
 
 if __name__ == "__main__":
+    global task_queue, response_queue
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 

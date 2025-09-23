@@ -32,6 +32,7 @@ class MqttDaemon:
         self.connected = False
         self.reconnect_delay = 5  # Start with 5 seconds
         self.max_reconnect_delay = 300  # Max 5 minutes
+        self.publish_ack_timeout = 5  # Seconds to wait for QoS acknowledgements
         # Initialize to current time so we don't spam immediate reconnects on startup
         self.last_disconnect_time = time.time()
 
@@ -358,9 +359,13 @@ class MqttDaemon:
                             response['payload'],
                             qos=response.get('qos', 1)
                         )
-                        # Check if publish was successful
+                        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                            self.logger.warning(f"Failed to publish message to {response['topic']} (rc={result.rc})")
+                            continue
                         if not result.is_published():
-                            self.logger.warning(f"Failed to publish message to {response['topic']}")
+                            result.wait_for_publish(timeout=self.publish_ack_timeout)
+                        if not result.is_published():
+                            self.logger.warning(f"Publish acknowledgement timed out for {response['topic']}")
                     except Exception as e:
                         self.logger.error(f"Error publishing message: {e}")
                 # Trigger periodic device health request (only if connected)

@@ -5,6 +5,7 @@ import sys
 import json
 import time
 import logging
+import signal
 import configparser
 import subprocess
 import threading
@@ -15,9 +16,9 @@ from utils import extract_device_id_from_hostname, get_last_capture_time, get_bo
 
 class DeviceWorker:
     """
-    실제 디바이스 제어 및 작업 처리를 담당하는 워커 프로세스.
-    - task_queue: MQTT 데몬으로부터 작업 요청을 받음
-    - response_queue: 처리 결과를 MQTT 데몬에게 전달하여 전송
+    Background worker process that executes device-level actions.
+    - Consumes commands from the task queue populated by the MQTT daemon.
+    - Publishes results back through the shared response queue.
     """
 
     def __init__(self, task_queue, response_queue):
@@ -49,17 +50,32 @@ class DeviceWorker:
         self.logger = logging.getLogger('DeviceWorker')
 
     def load_device_info(self):
-        """워커 작동에 필요한 최소한의 디바이스 정보 로드"""
+        """Load device metadata required for device operations."""
         config = configparser.ConfigParser()
         config.read(self.config_path)
         self.device_id = config.get('device', 'id', fallback=extract_device_id_from_hostname())
-        self.device_location = config.get('device', 'location', fallback='현장명')
+        self.device_location = config.get('device', 'location', fallback='Unknown')
         self.git_repo_url = config.get('update', 'git_repo_url', fallback="https://github.com/your-repo/bmtl-device.git") # Configurable Git URL
         self.logger.info(f"Worker loaded device info: ID={self.device_id}, Location={self.device_location}, Git Repo={self.git_repo_url}")
 
+    def _handle_shutdown_signal(self, signum, frame):
+        """Handle termination signals by stopping the worker loop."""
+        self.logger.info(f"Received signal {signum}, stopping worker loop.")
+        self.running = False
+        try:
+            self.task_queue.put_nowait(None)
+        except Exception:
+            pass
+        try:
+            self.response_queue.put_nowait(None)
+        except Exception:
+            pass
+
     def run(self):
-        """메인 루프: 작업 큐에서 작업을 받아 처리"""
+        """Main loop: read commands from the queue and dispatch handlers."""
         self.logger.info("Device worker started.")
+        signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
+        signal.signal(signal.SIGINT, self._handle_shutdown_signal)
         
         command_handlers = {
             'settings_request_all': self.handle_settings_request_all,
@@ -108,7 +124,7 @@ class DeviceWorker:
         self.logger.info("Device worker stopped.")
 
     def _publish(self, topic, payload):
-        """응답 큐에 넣어 MQTT 데몬이 전송하도록 함"""
+        """Enqueue an outgoing MQTT response via the shared queue."""
         self.response_queue.put({
             'topic': topic,
             'payload': json.dumps(payload),
@@ -116,17 +132,17 @@ class DeviceWorker:
         })
 
     # ##################################################################
-    # 아래는 device_mqtt_handler.py에서 가져온 작업 처리 메소드들
-    # self.client.publish(...) -> self._publish(...) 로 수정됨
+    # The following handlers mirror logic from the legacy device_mqtt_handler module
+    # Calls were adapted from self.client.publish(...) to self._publish(...)
     # ##################################################################
 
     def get_enhanced_settings(self):
-        """제어 시스템이 기대하는 형태의 설정 반환"""
+        """Return combined camera and device settings for inspector consumption."""
         try:
             gphoto_settings = self.gphoto_controller.get_current_settings()
             base_settings = gphoto_settings.get('settings', {}) if gphoto_settings.get('success') else {}
             
-            # 추가 설정 파일 읽기
+            # Helper for parsing additional configuration entries
             schedule_settings = config_manager.read_config('schedule_settings.json')
             image_settings = config_manager.read_config('image_settings.json')
 
@@ -187,7 +203,7 @@ class DeviceWorker:
             self.logger.error(f"Error handling status request: {e}")
 
     def handle_settings_change(self, device_id, payload):
-        """설정 변경 처리"""
+        """Apply incoming setting changes on the device."""
         try:
             settings_data = json.loads(payload) if payload else {}
             self.logger.info(f"Received settings change request: {settings_data}")
@@ -298,7 +314,7 @@ class DeviceWorker:
 
     def handle_wiper_request(self, device_id):
         try:
-            # 실제 와이퍼 제어 로직 (GPIO 등)
+            # Placeholder for GPIO-controlled wiper hardware integration
             self.logger.info("Wiper operation simulated.")
             response = {
                 "response_type": "wiper_result", "module_id": f"bmotion{device_id}",
@@ -329,7 +345,7 @@ class DeviceWorker:
             data = json.loads(payload) if payload else {}
             new_sitename = data.get('site_name', '')
             if not new_sitename:
-                # ... 오류 응답 전송
+                # Ignore empty site-name requests
                 return
 
             config = configparser.ConfigParser()
@@ -339,7 +355,7 @@ class DeviceWorker:
             with open(self.config_path, 'w') as configfile:
                 config.write(configfile)
             
-            self.device_location = new_sitename # 메모리 내 정보 업데이트
+            self.device_location = new_sitename  # Update cached location
             
             response = {
                 "response_type": "set_sitename_result", "module_id": f"bmotion{device_id}",
@@ -351,7 +367,7 @@ class DeviceWorker:
 
             def restart_service():
                 time.sleep(2)
-                os.system("sudo systemctl restart bmtl-device.service") # 변경된 서비스 이름
+                os.system("sudo systemctl restart bmtl-device.service")  # Restart service to reload config
             threading.Thread(target=restart_service, daemon=True).start()
 
         except Exception as e:
@@ -477,7 +493,7 @@ class DeviceWorker:
             })
 
     def handle_sw_rollback(self, device_id, payload):
-        # ... (미구현 응답 전송)
+        # TODO: Additional update logic placeholder
         pass
 
     def handle_sw_version_request(self, device_id):
@@ -500,10 +516,10 @@ class DeviceWorker:
             self.logger.error(f"Error handling SW version request: {e}")
 
     def send_health_status(self, device_id):
-        """헬스 상태 주기적 전송
-        - 업로드 완료 후 백업 폴더의 오늘 촬영 수 집계
-        - 운영시간(start/end)과 촬영 간격으로 기대 촬영 수 계산
-        - 현재시각 기준 기대치 대비 누락 촬영 수 계산 및 보고
+        """Summarise recent capture information for diagnostics."""
+        - After uploads complete, images move to backup storage for counting.
+        - Operating window start/end times are required for scheduling.
+        - Retention limits ensure old captures are recycled safely.
         """
         try:
             # Load paths from config
@@ -528,14 +544,14 @@ class DeviceWorker:
                     # Assume 10GB total capacity for approximation if actual disk_usage fails
                     storage_used_percentage = round((total_size / (10 * 1024 * 1024 * 1024)) * 100, 2)
 
-            # 오늘 촬영 수 계산 (백업 폴더 기준)
+            # Ensure existing entries remain when merging configuration
             today = datetime.now().strftime("%Y%m%d")
             today_captures = 0
             if os.path.exists(storage_path):
                 today_captures = len([f for f in os.listdir(storage_path)
                                     if f.startswith(f"photo_{today}")])
 
-            # 스케줄/간격/운영시간 로드
+            # Load start/end time and operating schedule values
             schedule = config_manager.read_config('schedule_settings.json') or {}
             start_time_str = schedule.get('start_time', '00:00')
             end_time_str = schedule.get('end_time', '23:59')
