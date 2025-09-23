@@ -4,7 +4,7 @@ import os
 import re
 import socket
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import configparser
 
@@ -27,7 +27,7 @@ def extract_device_id_from_hostname():
         return "01"
 
 def get_last_capture_time():
-    """마지막 촬영 시간 조회 (백업 폴더 우선)"""
+    """Return the most recent capture time as a UTC ISO 8601 string."""
     try:
         # Prefer backup folder (post-upload), fall back to legacy photos
         cfg = configparser.ConfigParser()
@@ -44,77 +44,81 @@ def get_last_capture_time():
                 continue
             latest_file = max(files, key=lambda f: os.path.getmtime(os.path.join(storage_path, f)))
             mtime = os.path.getmtime(os.path.join(storage_path, latest_file))
-            return datetime.fromtimestamp(mtime).isoformat()
+            return datetime.fromtimestamp(mtime, timezone.utc).isoformat()
         return None
-    except Exception as e:
-        logger.warning(f"Failed to get last capture time: {e}")
+    except Exception as exc:
+        logger.warning(f"Failed to get last capture time: {exc}")
         return None
+
 
 def get_boot_time():
-    """부팅 시간 조회"""
+    """Return the last boot time as a UTC ISO 8601 string."""
     try:
-        with open('/proc/uptime', 'r') as f:
-            uptime_seconds = float(f.readline().split()[0])
-            boot_time = datetime.now().timestamp() - uptime_seconds
-            return datetime.fromtimestamp(boot_time).isoformat()
-    except Exception as e:
-        logger.warning(f"Failed to get boot time: {e}")
-        return datetime.now().isoformat()
+        with open('/proc/uptime', 'r') as uptime_file:
+            uptime_seconds = float(uptime_file.readline().split()[0])
+            boot_timestamp = datetime.now(timezone.utc).timestamp() - uptime_seconds
+            return datetime.fromtimestamp(boot_timestamp, timezone.utc).isoformat()
+    except Exception as exc:
+        logger.warning(f"Failed to get boot time: {exc}")
+        return datetime.now(timezone.utc).isoformat()
+
 
 def get_temperature():
-    """온도 정보 조회"""
+    """Return device temperature in Celsius."""
     try:
-        # CPU 온도 조회 시도 (Raspberry Pi의 경우)
+        # Try CPU temperature sensor (e.g., Raspberry Pi)
         if os.path.exists('/sys/class/thermal/thermal_zone0/temp'):
-            with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
-                temp_millidegree = int(f.read().strip())
+            with open('/sys/class/thermal/thermal_zone0/temp', 'r') as temp_file:
+                temp_millidegree = int(temp_file.read().strip())
                 return round(temp_millidegree / 1000.0, 1)
 
-        # Linux systems with lm-sensors
+        # Fallback to lm-sensors output if available
         try:
             result = subprocess.run(['sensors'], capture_output=True, text=True, timeout=5)
             if result.returncode == 0:
                 import re
-                temps = re.findall(r'(\d+\.\d+)°C', result.stdout)
+                temps = re.findall(r'(\d+\.\d+).*C', result.stdout)
                 if temps:
                     return float(temps[0])
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-            logger.warning(f"lm-sensors check failed: {e}")
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as exc:
+            logger.warning(f"lm-sensors check failed: {exc}")
 
-        return 25.0  # 상온으로 가정
-    except Exception as e:
-        logger.warning(f"Failed to get temperature: {e}")
+        return 25.0  # Default fallback temperature
+    except Exception as exc:
+        logger.warning(f"Failed to get temperature: {exc}")
         return 25.0
 
+
 def get_current_sw_version():
-    """현재 SW 버전 조회"""
+    """Return the current software version identifier."""
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd="/opt/bmtl-device/current", # Blue/Green 구조에 맞게 current 디렉토리 참조
+            ['git', 'rev-parse', 'HEAD'],
+            cwd='/opt/bmtl-device/current',  # Resolve against the active Blue/Green slot
             capture_output=True,
             text=True,
             timeout=10
         )
         if result.returncode == 0:
-            return result.stdout.strip()[:12]  # 앞 12자리만
-        # Fallback to VERSION file when git is unavailable
-        version_file = os.path.join("/opt/bmtl-device/current", "VERSION")
+            return result.stdout.strip()
+        version_file = os.path.join('/opt/bmtl-device/current', 'VERSION')
         if os.path.exists(version_file):
             try:
-                with open(version_file, 'r') as f:
-                    return f.read().strip()
+                with open(version_file, 'r') as version_handle:
+                    return version_handle.read().strip()
             except Exception:
                 pass
-        return "unknown"
-    except Exception as e:
-        # If git is missing or path invalid, attempt VERSION file fallback
+        return 'unknown'
+    except Exception as exc:
         try:
-            version_file = os.path.join("/opt/bmtl-device/current", "VERSION")
+            version_file = os.path.join('/opt/bmtl-device/current', 'VERSION')
             if os.path.exists(version_file):
-                with open(version_file, 'r') as f:
-                    return f.read().strip()
+                with open(version_file, 'r') as version_handle:
+                    return version_handle.read().strip()
         except Exception:
             pass
-        logger.warning(f"Failed to get SW version: {e}")
-        return "unknown"
+        logger.warning(f"Failed to get SW version: {exc}")
+        return 'unknown'
+
+
+

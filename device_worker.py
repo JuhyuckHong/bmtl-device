@@ -9,7 +9,7 @@ import signal
 import configparser
 import subprocess
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from shared_config import config_manager
 from gphoto2_controller import GPhoto2Controller
 from utils import extract_device_id_from_hostname, get_last_capture_time, get_boot_time, get_temperature, get_current_sw_version
@@ -80,7 +80,6 @@ class DeviceWorker:
         command_handlers = {
             'settings_request_all': self.handle_settings_request_all,
             'settings_request_individual': self.handle_settings_request_individual,
-            'status_request': self.handle_status_request,
             'settings_change': self.handle_settings_change,
             'set_sitename': self.handle_set_sitename,
             'sw_update': self.handle_sw_update,
@@ -92,6 +91,7 @@ class DeviceWorker:
             'options_request_all': self.handle_options_request_all,
             'wiper_request': self.handle_wiper_request,
             'camera_power_request': self.handle_camera_power_request,
+            'camera_power_status_request': self.handle_camera_power_status_request,
             'health_check': self.send_health_status,
         }
 
@@ -110,8 +110,18 @@ class DeviceWorker:
 
                 handler = command_handlers.get(command)
                 if handler:
-                    # Handlers expect device_id and payload (if applicable)
-                    if command in ['settings_change', 'set_sitename', 'sw_update', 'sw_rollback']:
+                    payload_commands = {
+                        'settings_change',
+                        'set_sitename',
+                        'sw_update',
+                        'sw_rollback',
+                        'reboot_all',
+                        'reboot_individual',
+                        'wiper_request',
+                        'camera_power_request',
+                        'camera_power_status_request',
+                    }
+                    if command in payload_commands:
                         handler(device_id, payload)
                     else:
                         handler(device_id)
@@ -137,241 +147,332 @@ class DeviceWorker:
     # ##################################################################
 
     def get_enhanced_settings(self):
-        """Return combined camera and device settings for inspector consumption."""
+        """Return combined camera and device settings using camelCase keys."""
         try:
             gphoto_settings = self.gphoto_controller.get_current_settings()
             base_settings = gphoto_settings.get('settings', {}) if gphoto_settings.get('success') else {}
-            
-            # Helper for parsing additional configuration entries
-            schedule_settings = config_manager.read_config('schedule_settings.json')
-            image_settings = config_manager.read_config('image_settings.json')
+
+            schedule_settings = config_manager.read_config('schedule_settings.json') or {}
+            image_settings = config_manager.read_config('image_settings.json') or {}
+
+            shutter_speed = base_settings.get('shutter_speed') or base_settings.get('shutterspeed') or '1/60'
 
             enhanced_settings = {
-                "iso": base_settings.get("iso", "auto"),
-                "aperture": base_settings.get("aperture", "f/2.8"),
-                "shutter_speed": base_settings.get("shutter_speed", "1/60"),
-                "startTime": schedule_settings.get("start_time", "08:00"),
-                "endTime": schedule_settings.get("end_time", "18:00"),
-                "captureInterval": schedule_settings.get("capture_interval", "10"),
-                "imageSize": image_settings.get("image_size", "1920x1080"),
-                "quality": image_settings.get("quality", "85"),
-                "format": image_settings.get("format", "jpeg")
+                'iso': base_settings.get('iso', 'auto'),
+                'aperture': base_settings.get('aperture', 'f/2.8'),
+                'shutterSpeed': shutter_speed,
+                'startTime': schedule_settings.get('start_time', '08:00'),
+                'endTime': schedule_settings.get('end_time', '18:00'),
+                'captureInterval': schedule_settings.get('capture_interval', '10'),
+                'imageSize': image_settings.get('image_size', '1920x1080'),
+                'quality': image_settings.get('quality', '85'),
+                'format': image_settings.get('format', 'jpeg'),
             }
             return enhanced_settings
         except Exception as e:
             self.logger.error(f"Error getting enhanced settings: {e}")
             return {}
 
+
     def handle_settings_request_all(self, device_id):
         try:
-            enhanced_settings = self.get_enhanced_settings()
-            response = {
-                "response_type": "all_settings",
-                "modules": {f"bmotion{device_id}": enhanced_settings},
-                "timestamp": datetime.now().isoformat()
-            }
-            self._publish("bmtl/response/settings/all", response)
-            self.logger.info("Sent all settings response")
+            self.handle_settings_request_individual(device_id)
         except Exception as e:
             self.logger.error(f"Error handling all settings request: {e}")
+
 
     def handle_settings_request_individual(self, device_id):
         try:
             enhanced_settings = self.get_enhanced_settings()
             response = {
-                "response_type": "settings",
-                "module_id": f"bmotion{device_id}",
-                "settings": enhanced_settings,
-                "timestamp": datetime.now().isoformat()
+                'response_type': 'settings',
+                'module_id': f"bmotion{device_id}",
+                'settings': enhanced_settings,
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
             self._publish(f"bmtl/response/settings/{device_id}", response)
             self.logger.info("Sent individual settings response")
         except Exception as e:
             self.logger.error(f"Error handling individual settings request: {e}")
 
+
     def handle_status_request(self, device_id):
         try:
-            response = {
-                "response_type": "status",
-                "system_status": "normal",
-                "connected_modules": [f"bmotion{device_id}"],
-                "timestamp": datetime.now().isoformat()
-            }
-            self._publish("bmtl/response/status", response)
-            self.logger.info("Sent status response")
+            self.send_health_status(device_id)
         except Exception as e:
             self.logger.error(f"Error handling status request: {e}")
 
+
     def handle_settings_change(self, device_id, payload):
         """Apply incoming setting changes on the device."""
+        request_id = None
         try:
             settings_data = json.loads(payload) if payload else {}
+            request_id = settings_data.pop('request_id', None)
             self.logger.info(f"Received settings change request: {settings_data}")
 
             gphoto_settings, schedule_settings, image_settings = {}, {}, {}
-            if "iso" in settings_data: gphoto_settings["iso"] = settings_data["iso"]
-            if "aperture" in settings_data: gphoto_settings["aperture"] = settings_data["aperture"]
-            if "shutter_speed" in settings_data: gphoto_settings["shutter_speed"] = settings_data["shutter_speed"]
-            if "startTime" in settings_data: schedule_settings["start_time"] = settings_data["startTime"]
-            if "endTime" in settings_data: schedule_settings["end_time"] = settings_data["endTime"]
-            if "captureInterval" in settings_data: schedule_settings["capture_interval"] = settings_data["captureInterval"]
-            if "imageSize" in settings_data: image_settings["image_size"] = settings_data["imageSize"]
-            if "quality" in settings_data: image_settings["quality"] = settings_data["quality"]
-            if "format" in settings_data: image_settings["format"] = settings_data["format"]
+            if 'iso' in settings_data:
+                gphoto_settings['iso'] = settings_data['iso']
+            if 'aperture' in settings_data:
+                gphoto_settings['aperture'] = settings_data['aperture']
+            if 'shutterSpeed' in settings_data:
+                gphoto_settings['shutter_speed'] = settings_data['shutterSpeed']
+            if 'startTime' in settings_data:
+                schedule_settings['start_time'] = settings_data['startTime']
+            if 'endTime' in settings_data:
+                schedule_settings['end_time'] = settings_data['endTime']
+            if 'captureInterval' in settings_data:
+                schedule_settings['capture_interval'] = settings_data['captureInterval']
+            if 'imageSize' in settings_data:
+                image_settings['image_size'] = settings_data['imageSize']
+            if 'quality' in settings_data:
+                image_settings['quality'] = settings_data['quality']
+            if 'format' in settings_data:
+                image_settings['format'] = settings_data['format']
 
-            results = {"gphoto_settings": {"success": True, "errors": []}, "schedule_settings": {"success": True, "errors": []}, "image_settings": {"success": True, "errors": []}}
-            
+            results = {
+                'gphoto_settings': {'success': True, 'errors': []},
+                'schedule_settings': {'success': True, 'errors': []},
+                'image_settings': {'success': True, 'errors': []}
+            }
+
             if gphoto_settings:
-                results["gphoto_settings"] = self.gphoto_controller.apply_settings(gphoto_settings)
+                results['gphoto_settings'] = self.gphoto_controller.apply_settings(gphoto_settings)
             if schedule_settings:
                 try:
                     config_manager.write_config('schedule_settings.json', schedule_settings)
-                except Exception as e:
-                    results["schedule_settings"]["success"] = False
-                    results["schedule_settings"]["errors"].append(str(e))
+                except Exception as exc:
+                    results['schedule_settings']['success'] = False
+                    results['schedule_settings']['errors'].append(str(exc))
             if image_settings:
                 try:
                     config_manager.write_config('image_settings.json', image_settings)
-                except Exception as e:
-                    results["image_settings"]["success"] = False
-                    results["image_settings"]["errors"].append(str(e))
+                except Exception as exc:
+                    results['image_settings']['success'] = False
+                    results['image_settings']['errors'].append(str(exc))
 
             config_manager.write_config('camera_settings.json', settings_data)
-            overall_success = all(r["success"] for r in results.values())
-            
+            overall_success = all(result['success'] for result in results.values())
+
+            applied_settings = {key: value for key, value in settings_data.items()}
             response = {
-                "response_type": "set_settings_result",
-                "module_id": f"bmotion{device_id}",
-                "success": overall_success,
-                "message": "Settings applied successfully" if overall_success else "Some settings failed to apply",
-                "timestamp": datetime.now().isoformat()
+                'success': overall_success,
+                'message': 'Settings applied successfully' if overall_success else 'Some settings failed to apply',
+                'applied': applied_settings,
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
+            if request_id:
+                response['request_id'] = request_id
             self._publish(f"bmtl/response/set/settings/{device_id}", response)
             self.logger.info(f"Applied settings and sent response. Success: {overall_success}")
 
-        except Exception as e:
-            self.logger.error(f"Error handling settings change: {e}")
+        except Exception as exc:
+            self.logger.error(f"Error handling settings change: {exc}")
             error_response = {
-                "response_type": "set_settings_result",
-                "module_id": f"bmotion{device_id}",
-                "success": False, "message": f"Settings application failed: {str(e)}",
-                "timestamp": datetime.now().isoformat()
+                'success': False,
+                'message': f"Settings application failed: {exc}",
+                'applied': {},
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
+            if request_id:
+                error_response['request_id'] = request_id
             self._publish(f"bmtl/response/set/settings/{device_id}", error_response)
 
-    def handle_reboot_all(self, device_id):
-        try:
-            response = {
-                "response_type": "reboot_all_result", "success": True,
-                "message": "Global reboot initiated successfully",
-                "affected_modules": [f"bmotion{device_id}"],
-                "timestamp": datetime.now().isoformat()
-            }
-            self._publish("bmtl/response/reboot/all", response)
-            self.logger.info("Sent reboot all response, now rebooting...")
-            os.system("sudo reboot")
-        except Exception as e:
-            self.logger.error(f"Error handling reboot all: {e}")
 
-    def handle_reboot_individual(self, device_id):
+    def handle_reboot_all(self, device_id, payload):
         try:
-            response = {
-                "response_type": "reboot_result", "module_id": f"bmotion{device_id}",
-                "success": True, "message": "Reboot initiated successfully",
-                "timestamp": datetime.now().isoformat()
+            request = json.loads(payload) if payload else {}
+            request_id = request.get('request_id')
+
+            ack = {
+                'response_type': 'reboot_ack',
+                'accepted': True,
+                'message': 'Global reboot scheduled',
+                'eta_ms': 1000,
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
+            if request_id:
+                ack['request_id'] = request_id
+            self._publish(f"bmtl/ack/reboot/{device_id}", ack)
+
+            response = {
+                'response_type': 'reboot_all_result',
+                'success': True,
+                'message': 'Global reboot initiated',
+                'affected_modules': [f"bmotion{device_id}"],
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            if request_id:
+                response['request_id'] = request_id
+            self._publish('bmtl/response/reboot/all', response)
+            self.logger.info('Sent reboot-all acknowledgement, rebooting...')
+            os.system('sudo reboot')
+        except Exception as exc:
+            self.logger.error(f"Error handling reboot all: {exc}")
+
+
+    def handle_reboot_individual(self, device_id, payload):
+        try:
+            request = json.loads(payload) if payload else {}
+            request_id = request.get('request_id')
+
+            ack = {
+                'response_type': 'reboot_ack',
+                'accepted': True,
+                'message': 'Rebooting soon',
+                'eta_ms': 1000,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            if request_id:
+                ack['request_id'] = request_id
+            self._publish(f"bmtl/ack/reboot/{device_id}", ack)
+
+            response = {
+                'response_type': 'reboot_result',
+                'module_id': f"bmotion{device_id}",
+                'success': True,
+                'message': 'Reboot initiated',
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            if request_id:
+                response['request_id'] = request_id
             self._publish(f"bmtl/response/reboot/{device_id}", response)
-            self.logger.info("Sent individual reboot response, now rebooting...")
-            os.system("sudo reboot")
-        except Exception as e:
-            self.logger.error(f"Error handling individual reboot: {e}")
+            self.logger.info('Sent individual reboot acknowledgement, rebooting...')
+            os.system('sudo reboot')
+        except Exception as exc:
+            self.logger.error(f"Error handling individual reboot: {exc}")
+
 
     def handle_options_request_individual(self, device_id):
         try:
             options_result = self.gphoto_controller.get_camera_options()
             response = {
-                "response_type": "options", "module_id": f"bmotion{device_id}",
-                "options": options_result.get('options', {}) if options_result.get('success') else {},
-                "timestamp": datetime.now().isoformat()
+                'response_type': 'options',
+                'module_id': f"bmotion{device_id}",
+                'options': options_result.get('options', {}) if options_result.get('success') else {},
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
             self._publish(f"bmtl/response/options/{device_id}", response)
-            self.logger.info("Sent individual options response")
-        except Exception as e:
-            self.logger.error(f"Error handling individual options request: {e}")
+            self.logger.info('Sent individual options response')
+        except Exception as exc:
+            self.logger.error(f"Error handling individual options request: {exc}")
+
 
     def handle_options_request_all(self, device_id):
         try:
-            options_result = self.gphoto_controller.get_camera_options()
-            response = {
-                "response_type": "all_options",
-                "modules": {f"bmotion{device_id}": options_result.get('options', {}) if options_result.get('success') else {}},
-                "timestamp": datetime.now().isoformat()
-            }
-            self._publish("bmtl/response/options/all", response)
-            self.logger.info("Sent all options response")
-        except Exception as e:
-            self.logger.error(f"Error handling all options request: {e}")
+            self.handle_options_request_individual(device_id)
+        except Exception as exc:
+            self.logger.error(f"Error handling all options request: {exc}")
 
-    def handle_wiper_request(self, device_id):
+
+    def handle_wiper_request(self, device_id, payload):
         try:
-            # Placeholder for GPIO-controlled wiper hardware integration
-            self.logger.info("Wiper operation simulated.")
+            data = json.loads(payload) if payload else {}
+            request_id = data.get('request_id')
+            duration = data.get('duration_s')
+
+            self.logger.info('Wiper operation simulated.')
             response = {
-                "response_type": "wiper_result", "module_id": f"bmotion{device_id}",
-                "success": True, "message": "Wiper operation completed",
-                "timestamp": datetime.now().isoformat()
+                'response_type': 'wiper_result',
+                'module_id': f"bmotion{device_id}",
+                'success': True,
+                'message': 'Wiper operation completed',
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
+            if request_id:
+                response['request_id'] = request_id
+            if duration is not None:
+                response['duration_s'] = duration
             self._publish(f"bmtl/response/wiper/{device_id}", response)
-            self.logger.info("Sent wiper response")
-        except Exception as e:
-            self.logger.error(f"Error handling wiper request: {e}")
+            self.logger.info('Sent wiper response')
+        except Exception as exc:
+            self.logger.error(f"Error handling wiper request: {exc}")
 
-    def handle_camera_power_request(self, device_id):
+
+    def handle_camera_power_request(self, device_id, payload):
         try:
+            data = json.loads(payload) if payload else {}
+            request_id = data.get('request_id')
+
             result = self.gphoto_controller.camera_power_toggle()
             response = {
-                "response_type": "camera_power_result", "module_id": f"bmotion{device_id}",
-                "success": result.get('success', False), "message": result.get('message', ''),
-                "new_state": result.get('current_state', 'unknown'),
-                "timestamp": datetime.now().isoformat()
+                'response_type': 'camera_power_result',
+                'module_id': f"bmotion{device_id}",
+                'success': result.get('success', False),
+                'message': result.get('message', ''),
+                'new_state': result.get('current_state', 'unknown'),
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
+            if request_id:
+                response['request_id'] = request_id
             self._publish(f"bmtl/response/camera-on-off/{device_id}", response)
-            self.logger.info("Sent camera power response")
-        except Exception as e:
-            self.logger.error(f"Error handling camera power request: {e}")
+            self.logger.info('Sent camera power response')
+        except Exception as exc:
+            self.logger.error(f"Error handling camera power request: {exc}")
+
+
+    def handle_camera_power_status_request(self, device_id, payload):
+        try:
+            data = json.loads(payload) if payload else {}
+            request_id = data.get('request_id')
+
+            result = self.gphoto_controller.camera_power_toggle()
+            power_status = 'on' if result.get('current_state') == 'on' else 'off'
+            response = {
+                'success': result.get('success', False),
+                'power_status': power_status,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            if not result.get('success', False) and result.get('error'):
+                response['message'] = result['error']
+            if request_id:
+                response['request_id'] = request_id
+            self._publish(f"bmtl/response/camera-power-status/{device_id}", response)
+            self.logger.info('Sent camera power status response')
+        except Exception as exc:
+            self.logger.error(f"Error handling camera power status request: {exc}")
+
 
     def handle_set_sitename(self, device_id, payload):
         try:
             data = json.loads(payload) if payload else {}
+            request_id = data.get('request_id')
             new_sitename = data.get('site_name', '')
             if not new_sitename:
-                # Ignore empty site-name requests
                 return
 
             config = configparser.ConfigParser()
             config.read(self.config_path)
-            if not config.has_section('device'): config.add_section('device')
+            if not config.has_section('device'):
+                config.add_section('device')
             config.set('device', 'location', new_sitename)
             with open(self.config_path, 'w') as configfile:
                 config.write(configfile)
-            
-            self.device_location = new_sitename  # Update cached location
-            
+
+            self.device_location = new_sitename
+
             response = {
-                "response_type": "set_sitename_result", "module_id": f"bmotion{device_id}",
-                "success": True, "message": f"Site name updated to '{new_sitename}'. Daemon will restart.",
-                "new_sitename": new_sitename, "timestamp": datetime.now().isoformat()
+                'response_type': 'set_sitename_result',
+                'module_id': f"bmotion{device_id}",
+                'success': True,
+                'message': f"Site name updated to '{new_sitename}'. Daemon will restart.",
+                'site_name': new_sitename,
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
+            if request_id:
+                response['request_id'] = request_id
             self._publish(f"bmtl/response/set/sitename/{device_id}", response)
             self.logger.info(f"Site name updated to '{new_sitename}', restarting service.")
 
             def restart_service():
                 time.sleep(2)
-                os.system("sudo systemctl restart bmtl-device.service")  # Restart service to reload config
+                os.system('sudo systemctl restart bmtl-device.service')
             threading.Thread(target=restart_service, daemon=True).start()
 
-        except Exception as e:
-            self.logger.error(f"Error handling set sitename: {e}")
+        except Exception as exc:
+            self.logger.error(f"Error handling set sitename: {exc}")
+
 
     def handle_sw_update(self, device_id, payload):
         """
@@ -384,7 +485,7 @@ class DeviceWorker:
                 "module_id": f"bmotion{device_id}",
                 "success": True,
                 "message": "Robust software update process initiated.",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             self._publish(f"bmtl/response/sw-update/{device_id}", response)
             self.logger.info("Software update initiated. Starting robust update process in background.")
@@ -401,7 +502,7 @@ class DeviceWorker:
             self._publish(f"bmtl/response/sw-update/{device_id}", {
                 "response_type": "sw_update_result", "module_id": f"bmotion{device_id}",
                 "success": False, "message": f"Failed to start update thread: {e}",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
 
     def _execute_robust_update(self, device_id, payload):
@@ -470,7 +571,7 @@ class DeviceWorker:
             self._publish(f"bmtl/response/sw-update/{device_id}", {
                 "response_type": "sw_update_result", "module_id": f"bmotion{device_id}",
                 "success": True, "message": "Update successful. Restarting service.",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
             time.sleep(1) # Allow time for the message to be sent
             subprocess.run(["sudo", "systemctl", "restart", "bmtl-device.service"], check=True)
@@ -489,7 +590,7 @@ class DeviceWorker:
             self._publish(f"bmtl/response/sw-update/{device_id}", {
                 "response_type": "sw_update_result", "module_id": f"bmotion{device_id}",
                 "success": False, "message": f"Update failed: {e}",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
 
     def handle_sw_rollback(self, device_id, payload):
@@ -498,22 +599,20 @@ class DeviceWorker:
 
     def handle_sw_version_request(self, device_id):
         try:
-            commit_hash = "unknown"
+            version_value = 'unknown'
             try:
                 result = subprocess.run(["git", "rev-parse", "HEAD"], cwd="/opt/bmtl-device", capture_output=True, text=True, timeout=10)
-                if result.returncode == 0: commit_hash = result.stdout.strip()[:12]
-            except Exception as e:
-                self.logger.warning(f"Failed to get git commit hash: {e}")
+                if result.returncode == 0:
+                    version_value = result.stdout.strip()
+            except Exception as exc:
+                self.logger.warning(f"Failed to get git commit hash: {exc}")
 
-            response = {
-                "response_type": "sw_version_result", "module_id": f"bmotion{device_id}",
-                "success": True, "commit_hash": commit_hash,
-                "timestamp": datetime.now().isoformat()
-            }
+            response = {'version': version_value}
             self._publish(f"bmtl/response/sw-version/{device_id}", response)
-            self.logger.info(f"Sent SW version response: {commit_hash}")
-        except Exception as e:
-            self.logger.error(f"Error handling SW version request: {e}")
+            self.logger.info(f"Sent SW version response: {version_value}")
+        except Exception as exc:
+            self.logger.error(f"Error handling SW version request: {exc}")
+
 
     def send_health_status(self, device_id):
         """
@@ -607,7 +706,7 @@ class DeviceWorker:
                 "today_captured_count": today_captures,
                 "missed_captures": missed,
                 "sw_version": get_current_sw_version(),
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             self._publish(f"bmtl/status/health/{device_id}", payload)
         except Exception as e:
@@ -624,3 +723,5 @@ class DeviceWorker:
         return get_temperature()
     def get_current_sw_version(self):
         return get_current_sw_version()
+
+

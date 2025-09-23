@@ -38,14 +38,19 @@ class MqttDaemon:
             "sw_version": None,
             "site_name": None,
         }
-        self.health_status_topic_template = "bmtl/status/health/{self.device_id}"
+        self.device_id = None
+        self.health_status_topic_template = None
 
         # Initialize to current time so we don't spam immediate reconnects on startup
         self.last_disconnect_time = time.time()
 
         self.setup_logging()
         self.load_config()
-        self.device_id = self.extract_device_id_from_hostname()
+        if not self.device_id:
+            self.device_id = self.extract_device_id_from_hostname()
+        self.device_id = str(self.device_id).zfill(2)
+        self.mqtt_client_id = f"bmtl-device-{self.device_id}"
+        self.health_status_topic_template = f"bmtl/status/health/{self.device_id}"
 
     def setup_logging(self):
         os.makedirs(self.log_dir, exist_ok=True)
@@ -107,9 +112,8 @@ class MqttDaemon:
             
             config_device_id = self.config.get('device', 'id', fallback=None)
             if config_device_id:
-                self.device_id = config_device_id
+                self.device_id = str(config_device_id).zfill(2)
             
-            self.mqtt_client_id = f"bmtl-device-{self.device_id}"
             self.logger.info("MQTT configuration loaded successfully")
             if str(self.mqtt_port) in ("8884",) and self.mqtt_transport == 'tcp':
                 self.logger.warning(
@@ -177,6 +181,7 @@ class MqttDaemon:
                 "bmtl/request/options/all",
                 f"bmtl/request/wiper/{self.device_id}",
                 f"bmtl/request/camera-on-off/{self.device_id}",
+                f"bmtl/request/camera-power-status/{self.device_id}",
             ]
             for topic in topics_to_subscribe:
                 client.subscribe(topic, qos=2)
@@ -280,6 +285,7 @@ class MqttDaemon:
             self.logger.info(f"Next reconnection attempt in {self.reconnect_delay} seconds")
             self.last_disconnect_time = current_time
 
+
     def on_message(self, client, userdata, msg):
         try:
             topic = msg.topic
@@ -287,15 +293,15 @@ class MqttDaemon:
             self.logger.info(f"Received message on {topic}")
 
             task = {'payload': payload, 'device_id': self.device_id}
-            
+
             if topic == "bmtl/request/settings/all":
                 task['command'] = 'settings_request_all'
             elif topic == f"bmtl/request/settings/{self.device_id}":
                 task['command'] = 'settings_request_individual'
             elif topic == "bmtl/request/status/all":
-                task['command'] = 'status_request'
+                task['command'] = 'health_check'
             elif topic == f"bmtl/request/status/{self.device_id}":
-                task['command'] = 'status_request'
+                task['command'] = 'health_check'
             elif topic == f"bmtl/set/settings/{self.device_id}":
                 task['command'] = 'settings_change'
             elif topic == f"bmtl/set/sitename/{self.device_id}":
@@ -318,6 +324,8 @@ class MqttDaemon:
                 task['command'] = 'wiper_request'
             elif topic == f"bmtl/request/camera-on-off/{self.device_id}":
                 task['command'] = 'camera_power_request'
+            elif topic == f"bmtl/request/camera-power-status/{self.device_id}":
+                task['command'] = 'camera_power_status_request'
             else:
                 # Ignore topics that are not handled
                 return
