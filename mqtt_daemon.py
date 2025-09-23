@@ -33,6 +33,13 @@ class MqttDaemon:
         self.reconnect_delay = 5  # Start with 5 seconds
         self.max_reconnect_delay = 300  # Max 5 minutes
         self.publish_ack_timeout = 5  # Seconds to wait for QoS acknowledgements
+        self.health_payload_keys = {
+            "last_boot_time": None,
+            "sw_version": None,
+            "site_name": None,
+        }
+        self.health_status_topic_template = "bmtl/status/health/{self.device_id}"
+
         # Initialize to current time so we don't spam immediate reconnects on startup
         self.last_disconnect_time = time.time()
 
@@ -112,6 +119,40 @@ class MqttDaemon:
             self.logger.error(f"Error loading configuration: {e}")
             sys.exit(1)
 
+    def build_health_status_topic(self):
+        """Return the health status topic (bmtl/status/health/{self.device_id})."""
+        return f"bmtl/status/health/{self.device_id}"
+
+    def handle_software_rollback(self, payload):
+        """Queue a software rollback request for the worker process."""
+        task = {
+            'command': 'sw_rollback',
+            'device_id': self.device_id,
+            'payload': payload,
+        }
+        self.task_queue.put(task)
+        self.logger.info("Queued software rollback request for worker")
+        return task
+
+    def _execute_software_rollback(self, rollback_log_path='rollback_log_path'):
+        """Build a rollback response payload and enqueue it for publishing."""
+        response = {
+            "topic": f"bmtl/response/sw-rollback/{self.device_id}",
+            "payload": json.dumps({
+                "response_type": "sw_rollback_result",
+                "module_id": f"bmotion{self.device_id}",
+                "success": True,
+                "message": "Rollback completed successfully",
+                "log_file": rollback_log_path,
+            }),
+            "qos": 1,
+        }
+        try:
+            self.response_queue.put(response)
+        except Exception as exc:
+            self.logger.error(f"Failed to enqueue rollback response: {exc}")
+        return response
+
     def on_connect(self, client, userdata, flags, reason_code=None, properties=None):
         if reason_code is None:
             reason_code = mqtt.MQTT_ERR_SUCCESS
@@ -124,6 +165,7 @@ class MqttDaemon:
                 "bmtl/request/settings/all",
                 f"bmtl/request/settings/{self.device_id}",
                 "bmtl/request/status/all",
+                f"bmtl/request/status/{self.device_id}",
                 f"bmtl/set/settings/{self.device_id}",
                 f"bmtl/set/sitename/{self.device_id}",
                 f"bmtl/sw-update/{self.device_id}",
@@ -251,6 +293,8 @@ class MqttDaemon:
             elif topic == f"bmtl/request/settings/{self.device_id}":
                 task['command'] = 'settings_request_individual'
             elif topic == "bmtl/request/status/all":
+                task['command'] = 'status_request'
+            elif topic == f"bmtl/request/status/{self.device_id}":
                 task['command'] = 'status_request'
             elif topic == f"bmtl/set/settings/{self.device_id}":
                 task['command'] = 'settings_change'
