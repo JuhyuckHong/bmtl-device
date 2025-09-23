@@ -32,7 +32,8 @@ class MqttDaemon:
         self.connected = False
         self.reconnect_delay = 5  # Start with 5 seconds
         self.max_reconnect_delay = 300  # Max 5 minutes
-        self.last_disconnect_time = 0
+        # Initialize to current time so we don't spam immediate reconnects on startup
+        self.last_disconnect_time = time.time()
 
         self.setup_logging()
         self.load_config()
@@ -83,6 +84,11 @@ class MqttDaemon:
             self.mqtt_username = os.getenv('MQTT_USERNAME', self.config.get('mqtt', 'username', fallback=''))
             self.mqtt_password = os.getenv('MQTT_PASSWORD', self.config.get('mqtt', 'password', fallback=''))
             self.mqtt_use_tls = os.getenv('MQTT_USE_TLS', self.config.get('mqtt', 'use_tls', fallback='false')).lower() == 'true'
+            # Transport selection: 'tcp' (default) or 'websockets'
+            self.mqtt_transport = os.getenv('MQTT_TRANSPORT', self.config.get('mqtt', 'transport', fallback='tcp')).lower()
+            if self.mqtt_transport not in ('tcp', 'websockets'):
+                self.logger.warning(f"Invalid MQTT_TRANSPORT '{self.mqtt_transport}', defaulting to 'tcp'")
+                self.mqtt_transport = 'tcp'
             
             config_device_id = self.config.get('device', 'id', fallback=None)
             if config_device_id:
@@ -90,6 +96,10 @@ class MqttDaemon:
             
             self.mqtt_client_id = f"bmtl-device-{self.device_id}"
             self.logger.info("MQTT configuration loaded successfully")
+            if str(self.mqtt_port) in ("8884",) and self.mqtt_transport == 'tcp':
+                self.logger.warning(
+                    "Port 8884 is commonly used for secure WebSockets; consider setting MQTT_TRANSPORT=websockets if your broker requires WSS."
+                )
         except Exception as e:
             self.logger.error(f"Error loading configuration: {e}")
             sys.exit(1)
@@ -178,16 +188,24 @@ class MqttDaemon:
             return
 
         current_time = time.time()
+        # Respect backoff window
         if current_time - self.last_disconnect_time < self.reconnect_delay:
             return
 
         try:
+            # Schedule next opportunity before attempting (prevents rapid loops even on non-raising failures)
+            self.last_disconnect_time = current_time
             self.logger.info(f"Attempting to reconnect to MQTT broker at {self.mqtt_host}:{self.mqtt_port}")
             if self.client:
-                self.client.reconnect()
+                result = self.client.reconnect()
+                # If reconnect() returns an error code without raising, treat as failure for backoff
+                if isinstance(result, int) and result != mqtt.MQTT_ERR_SUCCESS:
+                    self.logger.warning(f"Reconnect returned non-success code: {result}")
+                    self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+                    self.logger.info(f"Next reconnection attempt in {self.reconnect_delay} seconds")
             else:
                 self.setup_mqtt_client()
-                self.client.connect(self.mqtt_host, self.mqtt_port, 60)
+                self.client.connect(self.mqtt_host, self.mqtt_port, 120)
 
         except Exception as e:
             self.logger.error(f"Reconnection attempt failed: {e}")
@@ -244,9 +262,10 @@ class MqttDaemon:
     def setup_mqtt_client(self):
         callback_api_version = mqtt.CallbackAPIVersion.VERSION2
         try:
-            self.client = mqtt.Client(client_id=self.mqtt_client_id, callback_api_version=callback_api_version)
+            self.client = mqtt.Client(client_id=self.mqtt_client_id, callback_api_version=callback_api_version, transport=self.mqtt_transport)
         except (AttributeError, TypeError):
-            self.client = mqtt.Client(client_id=self.mqtt_client_id)
+            # Older paho versions
+            self.client = mqtt.Client(client_id=self.mqtt_client_id, transport=self.mqtt_transport)
 
         # Forward paho-mqtt internal logs to our logger for better diagnostics
         try:
@@ -254,6 +273,7 @@ class MqttDaemon:
         except Exception:
             pass
 
+        # Basic auth
         if self.mqtt_username and self.mqtt_password:
             self.client.username_pw_set(self.mqtt_username, self.mqtt_password)
         if self.mqtt_use_tls:
@@ -268,6 +288,16 @@ class MqttDaemon:
                     self.client.tls_set()
                 except Exception as e2:
                     self.logger.error(f"TLS reconfiguration failed: {e2}")
+
+        # Configure automatic reconnect delay inside paho as well
+        try:
+            self.client.reconnect_delay_set(min_delay=self.reconnect_delay, max_delay=self.max_reconnect_delay)
+        except Exception:
+            pass
+
+        self.logger.info(
+            f"MQTT setup: host={self.mqtt_host}:{self.mqtt_port}, tls={self.mqtt_use_tls}, transport={self.mqtt_transport}, client_id={self.mqtt_client_id}"
+        )
 
         self.client.on_connect = self.on_connect
         self.client.on_disconnect = self.on_disconnect
