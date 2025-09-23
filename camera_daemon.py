@@ -296,6 +296,9 @@ class BMTLCameraDaemon:
         except Exception as err:
             self.logger.warning(f"Failed to apply saved schedule settings: {err}")
 
+        # Brief current configuration on startup
+        self.log_startup_briefing()
+
         self.logger.info("BMTL Camera Daemon initialized")
 
     def setup_logging(self):
@@ -332,6 +335,96 @@ class BMTLCameraDaemon:
             except Exception as err:
                 self.logger.warning(f"Failed to seed default config {filename}: {err}")
 
+    def log_startup_briefing(self):
+        """Log current camera configuration and schedule settings on startup"""
+        try:
+            self.logger.info("=" * 80)
+            self.logger.info("📸 BMTL CAMERA DAEMON STARTUP BRIEFING")
+            self.logger.info("=" * 80)
+
+            # Camera configuration briefing
+            try:
+                camera_config = read_camera_config() or DEFAULT_CAMERA_CONFIG
+                self.logger.info("📷 Camera Configuration:")
+                for key, value in camera_config.items():
+                    self.logger.info(f"   {key.upper()}: {value}")
+            except Exception as e:
+                self.logger.warning(f"   Failed to read camera config: {e}")
+
+            self.logger.info("-" * 40)
+
+            # Schedule briefing
+            schedule = self.current_schedule
+            if schedule.get('enabled', False):
+                self.logger.info("⏰ Schedule Configuration: ENABLED")
+                schedule_type = schedule.get('type', 'unknown')
+                self.logger.info(f"   Type: {schedule_type}")
+
+                if schedule_type == 'windowed_interval':
+                    start_time = schedule.get('start_time', 'N/A')
+                    end_time = schedule.get('end_time', 'N/A')
+                    interval = schedule.get('capture_interval', 'N/A')
+                    interval_minutes = schedule.get('interval_minutes', 'N/A')
+
+                    self.logger.info(f"   Operating Hours: {start_time} - {end_time}")
+                    self.logger.info(f"   Capture Interval: {interval} seconds")
+                    self.logger.info(f"   Window Interval: {interval_minutes} minutes")
+
+                    # Calculate next capture window
+                    next_capture = schedule.get('next_capture')
+                    window_start = schedule.get('window_start')
+                    window_end = schedule.get('window_end')
+
+                    if next_capture:
+                        self.logger.info(f"   Next Capture: {next_capture}")
+                    if window_start and window_end:
+                        self.logger.info(f"   Current Window: {window_start} - {window_end}")
+
+                elif schedule_type == 'continuous':
+                    interval = schedule.get('capture_interval', 'N/A')
+                    self.logger.info(f"   Continuous Mode - Interval: {interval} seconds")
+
+                last_capture = schedule.get('last_capture')
+                if last_capture:
+                    self.logger.info(f"   Last Capture: {last_capture}")
+
+            else:
+                self.logger.info("⏰ Schedule Configuration: DISABLED")
+                self.logger.info("   Manual capture mode only")
+
+            self.logger.info("-" * 40)
+
+            # Storage paths
+            self.logger.info("📁 Storage Configuration:")
+            self.logger.info(f"   Upload Path: {self.camera.upload_path}")
+            self.logger.info(f"   Backup Path: {self.camera.backup_path}")
+            self.logger.info(f"   Config Path: {self.config_path}")
+
+            self.logger.info("-" * 40)
+
+            # Camera connection status
+            camera_connected = self.camera.check_camera_connection()
+            status_icon = "✅" if camera_connected else "❌"
+            self.logger.info(f"🔌 Camera Connection: {status_icon} {'Connected' if camera_connected else 'Not Connected'}")
+
+            # Statistics
+            try:
+                stats = config_manager.read_config(CAMERA_STATS_FILE) or DEFAULT_CAMERA_STATS
+                if stats.get('total_captures', 0) > 0:
+                    self.logger.info("📊 Recent Statistics:")
+                    self.logger.info(f"   Total Captures: {stats.get('total_captures', 0)}")
+                    self.logger.info(f"   Successful: {stats.get('successful_captures', 0)}")
+                    self.logger.info(f"   Missed: {stats.get('missed_captures', 0)}")
+                    last_success = stats.get('last_successful_capture')
+                    if last_success:
+                        self.logger.info(f"   Last Successful: {last_success}")
+            except Exception as e:
+                self.logger.warning(f"   Failed to read statistics: {e}")
+
+            self.logger.info("=" * 80)
+
+        except Exception as e:
+            self.logger.error(f"Error during startup briefing: {e}")
 
     def watch_config_files(self):
         """Watch for configuration file changes using inotify"""
