@@ -2,16 +2,15 @@
 
 import os
 import sys
-import json
 import copy
 import time
 import signal
 import logging
 import subprocess
 import threading
+import math
 import inotify_simple
 from datetime import datetime, timedelta
-from pathlib import Path
 from shared_config import config_manager, read_camera_config, read_camera_command, read_camera_schedule
 import configparser
 
@@ -30,9 +29,15 @@ DEFAULT_CAMERA_CONFIG = {
 
 DEFAULT_CAMERA_SCHEDULE = {
     'enabled': False,
-    'type': 'interval',
+    'type': 'windowed_interval',
+    'start_time': '00:00',
+    'end_time': '23:59',
+    'capture_interval': 60,
     'interval_minutes': 60,
     'last_capture': None,
+    'next_capture': None,
+    'window_start': None,
+    'window_end': None,
 }
 
 DEFAULT_CAMERA_STATS = {
@@ -261,6 +266,7 @@ class BMTLCameraDaemon:
         self.last_command_processed = None
         self.schedule_thread = None
         self.upload_mover_thread = None
+        self.current_schedule = copy.deepcopy(DEFAULT_CAMERA_SCHEDULE)
 
         self.setup_logging()
 
@@ -273,6 +279,22 @@ class BMTLCameraDaemon:
             sys.exit(1)
 
         self.ensure_default_configs()
+
+        # Load persisted schedule state if available
+        try:
+            persisted_schedule = read_camera_schedule()
+            if persisted_schedule:
+                self.current_schedule = persisted_schedule
+        except Exception as err:
+            self.logger.warning(f"Failed to load existing camera schedule: {err}")
+
+        # Apply saved schedule settings to derive an active plan
+        try:
+            existing_settings = config_manager.read_config('schedule_settings.json')
+            if existing_settings:
+                self.update_schedule(existing_settings)
+        except Exception as err:
+            self.logger.warning(f"Failed to apply saved schedule settings: {err}")
 
         self.logger.info("BMTL Camera Daemon initialized")
 
@@ -350,11 +372,17 @@ class BMTLCameraDaemon:
                     self.process_camera_command(command)
                     self.last_command_processed = command
 
+            elif filename == 'schedule_settings.json':
+                settings = config_manager.read_config('schedule_settings.json')
+                if settings is not None:
+                    self.logger.info(f"Schedule settings updated: {settings}")
+                    self.update_schedule(settings)
+
             elif filename == 'camera_schedule.json':
                 schedule = read_camera_schedule()
                 if schedule:
                     self.logger.info(f"Camera schedule updated: {schedule}")
-                    self.update_schedule(schedule)
+                    self.current_schedule = schedule
 
         except Exception as e:
             self.logger.error(f"Error handling config change for {filename}: {e}")
@@ -386,21 +414,227 @@ class BMTLCameraDaemon:
         except Exception as e:
             self.logger.error(f"Error processing camera command: {e}")
 
-    def update_schedule(self, schedule):
-        """Update camera shooting schedule"""
-        # This would implement scheduled shooting logic
-        # For now, just log the schedule
-        self.logger.info(f"Schedule updated: {schedule}")
+    def update_schedule(self, schedule_settings, current_time=None):
+        """Normalize schedule settings and persist the derived capture plan."""
+        try:
+            schedule_settings = schedule_settings or {}
+            now = current_time or datetime.now()
+
+            existing_schedule = read_camera_schedule() or {}
+            last_capture = existing_schedule.get('last_capture')
+            if last_capture:
+                try:
+                    datetime.fromisoformat(last_capture)
+                except ValueError:
+                    self.logger.warning(f"Invalid last_capture timestamp '{last_capture}', resetting to None")
+                    last_capture = None
+
+            start_fallback = self._normalize_time_field(existing_schedule.get('start_time'), '00:00')
+            end_fallback = self._normalize_time_field(existing_schedule.get('end_time'), '23:59')
+
+            start_time = self._normalize_time_field(schedule_settings.get('start_time'), start_fallback)
+            end_time = self._normalize_time_field(schedule_settings.get('end_time'), end_fallback)
+
+            existing_interval = self._normalize_interval(
+                existing_schedule.get('capture_interval', existing_schedule.get('interval_minutes')),
+                60,
+            )
+            interval = self._normalize_interval(schedule_settings.get('capture_interval'), existing_interval)
+
+            if 'enabled' in schedule_settings:
+                enabled_flag = schedule_settings.get('enabled')
+            elif schedule_settings:
+                enabled_flag = True
+            else:
+                enabled_flag = existing_schedule.get('enabled', False)
+
+            schedule_plan = {
+                'enabled': bool(enabled_flag) and interval > 0,
+                'type': 'windowed_interval',
+                'start_time': start_time,
+                'end_time': end_time,
+                'capture_interval': interval,
+                'interval_minutes': interval,
+                'last_capture': last_capture,
+            }
+
+            normalized_state, _ = self._normalize_schedule_state(schedule_plan, now)
+            schedule_plan.update(normalized_state)
+
+            config_manager.write_config('camera_schedule.json', schedule_plan)
+            self.current_schedule = schedule_plan
+
+            self.logger.info(
+                "Schedule normalized: start=%s end=%s interval=%s next=%s",
+                start_time,
+                end_time,
+                interval,
+                schedule_plan.get('next_capture'),
+            )
+
+        except Exception as e:
+            self.logger.error(f"Failed to update schedule: {e}")
+
+    def _normalize_time_field(self, value, fallback):
+        """Return a HH:MM string, falling back when parsing fails."""
+        def _try_parse(candidate):
+            if candidate in (None, ''):
+                return None
+            candidate_str = str(candidate).strip()
+            try:
+                parsed = datetime.strptime(candidate_str, '%H:%M')
+                return parsed.strftime('%H:%M')
+            except ValueError:
+                return None
+
+        normalized = _try_parse(value)
+        if normalized is not None:
+            return normalized
+
+        fallback_normalized = _try_parse(fallback)
+        if fallback_normalized is not None:
+            if value not in (None, '') and str(value).strip() != fallback_normalized:
+                self.logger.warning(
+                    f"Invalid time value '{value}', using fallback '{fallback_normalized}'"
+                )
+            return fallback_normalized
+
+        return '00:00'
+
+    def _normalize_interval(self, value, fallback):
+        """Convert the interval to a non-negative integer number of minutes."""
+        candidates = [value, fallback, 0]
+        for candidate in candidates:
+            if candidate in (None, ''):
+                continue
+            try:
+                interval = int(candidate)
+                return max(interval, 0)
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    def _calculate_window(self, reference, start_str, end_str):
+        """Return datetime bounds for the capture window closest to reference."""
+        start_hour, start_minute = map(int, start_str.split(':'))
+        end_hour, end_minute = map(int, end_str.split(':'))
+
+        start_today = reference.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+        end_today = reference.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
+
+        if end_today > start_today:
+            if reference < start_today:
+                return start_today, end_today, False
+            if reference <= end_today:
+                return start_today, end_today, True
+            next_start = start_today + timedelta(days=1)
+            next_end = end_today + timedelta(days=1)
+            return next_start, next_end, False
+
+        if reference >= start_today:
+            return start_today, end_today + timedelta(days=1), True
+        if reference <= end_today:
+            return start_today - timedelta(days=1), end_today, True
+
+        next_start = start_today
+        next_end = end_today + timedelta(days=1)
+        return next_start, next_end, False
+
+    def _align_to_interval(self, base, reference, interval_td):
+        """Return the first capture time >= reference aligned to the interval."""
+        if interval_td.total_seconds() <= 0:
+            return base
+        if reference <= base:
+            return base
+
+        delta_seconds = (reference - base).total_seconds()
+        intervals = math.ceil(delta_seconds / interval_td.total_seconds())
+        return base + (interval_td * intervals)
+
+    def _advance_window(self, start_dt, end_dt):
+        """Advance window bounds by one day preserving duration."""
+        window_length = end_dt - start_dt
+        if window_length <= timedelta(0):
+            window_length = timedelta(days=1)
+        next_start = start_dt + timedelta(days=1)
+        next_end = next_start + window_length
+        return next_start, next_end
+
+    def _normalize_schedule_state(self, schedule, now):
+        """Return normalized schedule fields and whether a capture is due."""
+        normalized = {}
+
+        start_time = self._normalize_time_field(schedule.get('start_time'), '00:00')
+        end_time = self._normalize_time_field(schedule.get('end_time'), '23:59')
+        interval = self._normalize_interval(
+            schedule.get('capture_interval', schedule.get('interval_minutes')),
+            0,
+        )
+
+        enabled = bool(schedule.get('enabled', True)) and interval > 0
+
+        normalized.update({
+            'type': 'windowed_interval',
+            'start_time': start_time,
+            'end_time': end_time,
+            'capture_interval': interval,
+            'interval_minutes': interval,
+            'enabled': enabled,
+        })
+
+        if not enabled:
+            normalized.update({
+                'window_start': None,
+                'window_end': None,
+                'next_capture': None,
+            })
+            return normalized, False
+
+        window_start, window_end, _ = self._calculate_window(now, start_time, end_time)
+        normalized['window_start'] = window_start.isoformat()
+        normalized['window_end'] = window_end.isoformat()
+
+        interval_td = timedelta(minutes=interval)
+
+        last_capture_str = schedule.get('last_capture')
+        last_capture_dt = None
+        if last_capture_str:
+            try:
+                last_capture_dt = datetime.fromisoformat(last_capture_str)
+            except ValueError:
+                self.logger.warning(f"Invalid last_capture timestamp '{last_capture_str}', resetting to None")
+                normalized['last_capture'] = None
+
+        candidate_time = max(now, window_start)
+        if last_capture_dt:
+            candidate_time = max(candidate_time, last_capture_dt + interval_td)
+
+        next_capture = self._align_to_interval(window_start, candidate_time, interval_td)
+        if next_capture is None or next_capture > window_end:
+            window_start, window_end = self._advance_window(window_start, window_end)
+            normalized['window_start'] = window_start.isoformat()
+            normalized['window_end'] = window_end.isoformat()
+            next_capture = window_start
+            capture_due = False
+        else:
+            capture_due = window_start <= next_capture <= window_end and now >= next_capture
+
+        normalized['next_capture'] = next_capture.isoformat()
+
+        return normalized, capture_due
 
     def run_scheduled_tasks(self):
-        """Run scheduled camera tasks in separate thread"""
+        """Run scheduled camera tasks in separate thread."""
         while self.running:
             try:
-                # Check for scheduled tasks
                 schedule = read_camera_schedule()
-                if schedule and schedule.get('enabled', False):
+                if schedule:
+                    self.current_schedule = schedule
+                else:
+                    schedule = self.current_schedule
+
+                if schedule:
                     self.check_and_execute_schedule(schedule)
-                # If no schedule file exists or schedule is disabled, just wait
 
                 time.sleep(60)  # Check every minute
 
@@ -408,50 +642,56 @@ class BMTLCameraDaemon:
                 self.logger.error(f"Error in scheduled tasks: {e}")
                 time.sleep(60)
 
-    def check_and_execute_schedule(self, schedule):
-        """Check if scheduled capture should be executed"""
+    def check_and_execute_schedule(self, schedule, current_time=None):
+        """Evaluate the schedule and trigger captures when due."""
         try:
-            schedule_type = schedule.get('type', 'interval')
+            if not schedule:
+                return
 
-            if schedule_type == 'interval':
-                interval_minutes = schedule.get('interval_minutes', 60)
-                last_capture = schedule.get('last_capture')
+            now = current_time or datetime.now()
+            original_schedule = copy.deepcopy(schedule)
+            working_schedule = copy.deepcopy(schedule)
 
-                if not last_capture:
-                    # First time, capture now
-                    self.execute_scheduled_capture(schedule)
-                else:
-                    last_time = datetime.fromisoformat(last_capture)
-                    if datetime.now() - last_time >= timedelta(minutes=interval_minutes):
-                        self.execute_scheduled_capture(schedule)
+            normalized_state, capture_due = self._normalize_schedule_state(working_schedule, now)
+            working_schedule.update(normalized_state)
 
-            elif schedule_type == 'time':
-                # Specific time scheduling (e.g., every day at 12:00)
-                target_time = schedule.get('time', '12:00')
-                # Implementation for specific time scheduling
-                pass
+            schedule_changed = working_schedule != original_schedule
+
+            if capture_due:
+                result, capture_time = self.execute_scheduled_capture(planned_time=now)
+                working_schedule['last_capture'] = capture_time.isoformat()
+
+                post_state, _ = self._normalize_schedule_state(working_schedule, capture_time)
+                working_schedule.update(post_state)
+                schedule_changed = True
+
+            self.current_schedule = working_schedule
+
+            if schedule_changed:
+                config_manager.write_config('camera_schedule.json', working_schedule)
 
         except Exception as e:
             self.logger.error(f"Error checking schedule: {e}")
 
-    def execute_scheduled_capture(self, schedule):
-        """Execute a scheduled capture"""
+    def execute_scheduled_capture(self, planned_time=None):
+        """Execute a scheduled capture and persist the result."""
+        capture_time = planned_time or datetime.now()
         try:
             result = self.camera.capture_photo()
-
-            # Update last capture time in schedule
-            schedule['last_capture'] = datetime.now().isoformat()
-            config_manager.write_config('camera_schedule.json', schedule)
-
-            self.logger.info(f"Scheduled capture completed: {result}")
-
-            # Save capture result for MQTT to report
             config_manager.write_config('camera_result.json', result)
+            self.logger.info(f"Scheduled capture completed: {result}")
+            return result, capture_time
 
         except Exception as e:
             self.logger.error(f"Error in scheduled capture: {e}")
-            # Also update stats for failed scheduled capture
+            failure_result = {
+                'success': False,
+                'error': str(e),
+                'timestamp': datetime.now().isoformat(),
+            }
+            config_manager.write_config('camera_result.json', failure_result)
             self.camera.update_capture_stats(False)
+            return failure_result, capture_time
 
     def signal_handler(self, signum, frame):
         self.logger.info(f"Received signal {signum}, shutting down gracefully...")
