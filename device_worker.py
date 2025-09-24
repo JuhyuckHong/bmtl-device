@@ -218,6 +218,14 @@ class DeviceWorker:
                 gphoto_settings['aperture'] = settings_data['aperture']
             if 'shutterSpeed' in settings_data:
                 gphoto_settings['shutter_speed'] = settings_data['shutterSpeed']
+            if 'image_quality' in settings_data:
+                gphoto_settings['image_quality'] = settings_data['image_quality']
+            if 'focus_mode' in settings_data:
+                gphoto_settings['focus_mode'] = settings_data['focus_mode']
+            if 'whiteBalance' in settings_data:
+                gphoto_settings['whitebalance'] = settings_data['whiteBalance']
+            if 'whitebalance' in settings_data:
+                gphoto_settings['whitebalance'] = settings_data['whitebalance']
             if 'startTime' in settings_data:
                 schedule_settings['start_time'] = settings_data['startTime']
             if 'endTime' in settings_data:
@@ -238,7 +246,30 @@ class DeviceWorker:
             }
 
             if gphoto_settings:
-                results['gphoto_settings'] = self.gphoto_controller.apply_settings(gphoto_settings)
+                try:
+                    alias_map = {
+                        'shutter_speed': 'shutterspeed',
+                        'image_quality': 'imagequality',
+                        'focus_mode': 'focusmode2',
+                    }
+                    camera_config_payload = {}
+                    for source_key, value in gphoto_settings.items():
+                        target_key = alias_map.get(source_key, source_key)
+                        camera_config_payload[target_key] = value
+
+                    if camera_config_payload:
+                        existing_config = config_manager.read_config('camera_config.json') or {}
+                        existing_config.update(camera_config_payload)
+                        config_manager.write_config('camera_config.json', existing_config)
+
+                    results['gphoto_settings'] = {
+                        'success': True,
+                        'errors': [],
+                        'queued_settings': camera_config_payload,
+                    }
+                except Exception as exc:
+                    results['gphoto_settings']['success'] = False
+                    results['gphoto_settings']['errors'].append(str(exc))
             if schedule_settings:
                 try:
                     config_manager.write_config('schedule_settings.json', schedule_settings)
@@ -251,7 +282,6 @@ class DeviceWorker:
                 except Exception as exc:
                     results['image_settings']['success'] = False
                     results['image_settings']['errors'].append(str(exc))
-
             config_manager.write_config('camera_settings.json', settings_data)
             overall_success = all(result['success'] for result in results.values())
 

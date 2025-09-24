@@ -183,12 +183,15 @@ class GPhoto2Controller:
             errors = []
 
             setting_map = {
-                'iso': 'iso',
-                'aperture': 'aperture',
-                'shutterspeed': 'shutterspeed',
-                'whitebalance': 'whitebalance',
-                'image_size': 'imageformat',  # Resolution changes require additional handling
-                'quality': 'imagequality',
+                'iso': '/main/imgsettings/iso',
+                'aperture': '/main/capturesettings/exposurecompensation',
+                'shutter_speed': '/main/capturesettings/shutterspeed',
+                'shutterspeed': '/main/capturesettings/shutterspeed',
+                'whitebalance': '/main/imgsettings/whitebalance',
+                'image_size': '/main/imgsettings/imagesize',  # Resolution changes require additional handling
+                'quality': '/main/capturesettings/imagequality',
+                'image_quality': '/main/capturesettings/imagequality',
+                'focus_mode': '/main/capturesettings/focusmode2',
             }
 
             for key, value in settings.items():

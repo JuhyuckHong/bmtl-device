@@ -103,21 +103,44 @@ class CameraController:
     def apply_config(self, config):
         """Apply camera configuration using gphoto2"""
         try:
-            for setting, value in config.items():
-                if setting in ['iso', 'shutterspeed', 'aperture', 'whitebalance']:
-                    cmd = ['gphoto2', f'--set-config', f'{setting}={value}']
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            setting_map = {
+                'iso': '/main/imgsettings/iso',
+                'aperture': '/main/capturesettings/exposurecompensation',
+                'shutterspeed': '/main/capturesettings/shutterspeed',
+                'whitebalance': '/main/imgsettings/whitebalance',
+                'imagequality': '/main/capturesettings/imagequality',
+                'focusmode2': '/main/capturesettings/focusmode2',
+            }
+            alias_map = {
+                'shutter_speed': 'shutterspeed',
+                'image_quality': 'imagequality',
+                'focus_mode': 'focusmode2',
+            }
+            applied_config = {}
+            for setting, value in (config or {}).items():
+                canonical_key = alias_map.get(setting, setting)
+                gphoto_key = setting_map.get(canonical_key)
+                if not gphoto_key:
+                    self.logger.debug("Skipping unsupported gphoto2 setting: %s", setting)
+                    continue
 
-                    if result.returncode == 0:
-                        self.logger.info(f"Applied {setting}={value}")
-                    else:
-                        self.logger.error(f"Failed to set {setting}={value}: {result.stderr}")
+                cmd = ['gphoto2', '--set-config', f'{gphoto_key}={value}']
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
-            self.current_config.update(config)
-            self.logger.info(f"Camera configuration applied: {config}")
+                if result.returncode == 0:
+                    applied_config[canonical_key] = value
+                    self.logger.info("Applied %s=%s", canonical_key, value)
+                else:
+                    self.logger.error("Failed to set %s=%s: %s", canonical_key, value, result.stderr)
+
+            if applied_config:
+                self.current_config.update(applied_config)
+                self.logger.info("Camera configuration applied: %s", applied_config)
+            else:
+                self.logger.info("No supported camera settings found in: %s", config)
 
         except Exception as e:
-            self.logger.error(f"Error applying camera config: {e}")
+            self.logger.error("Error applying camera config: %s", e)
 
     def capture_photo(self, filename=None):
         """Capture a photo using gphoto2"""
