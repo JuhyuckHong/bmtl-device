@@ -140,7 +140,7 @@ sudo apt update && sudo apt upgrade -y
 
 # Install required packages
 echo "📦 Installing dependencies..."
-sudo apt install -y python3 python3-pip python3-venv git gphoto2 libgphoto2-dev python3-rpi.gpio rsync
+sudo apt install -y python3 python3-pip python3-venv git gphoto2 libgphoto2-dev python3-rpi.gpio rsync build-essential python3-dev libffi-dev
 
 # Create application directory
 APP_DIR="/opt/bmtl-device"
