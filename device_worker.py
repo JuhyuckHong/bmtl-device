@@ -582,7 +582,18 @@ class DeviceWorker:
             pip_path = os.path.join(venv_path, "bin/pip")
 
             subprocess.run([sys.executable, "-m", "venv", venv_path], check=True)
-            subprocess.run([pip_path, "install", "-r", os.path.join(inactive_path, "requirements.txt")], check=True)
+
+            pip_env = os.environ.copy()
+            pip_cache_dir = os.path.join(inactive_path, "pip-cache")
+            pip_tmp_dir = os.path.join(inactive_path, "pip-tmp")
+            os.makedirs(pip_cache_dir, exist_ok=True)
+            os.makedirs(pip_tmp_dir, exist_ok=True)
+            pip_env["PIP_CACHE_DIR"] = pip_cache_dir
+            pip_env["XDG_CACHE_HOME"] = pip_cache_dir
+            pip_env["TMPDIR"] = pip_tmp_dir
+            pip_env.setdefault("HOME", inactive_path)
+
+            subprocess.run([pip_path, "install", "--no-cache-dir", "-r", os.path.join(inactive_path, "requirements.txt")], check=True, env=pip_env)
             self.logger.info("Dependencies installed in virtual environment.")
 
             # Basic code integrity check
@@ -753,5 +764,3 @@ class DeviceWorker:
         return get_temperature()
     def get_current_sw_version(self):
         return get_current_sw_version()
-
-
