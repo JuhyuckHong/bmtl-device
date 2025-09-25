@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 
 import os
 import sys
@@ -665,9 +665,22 @@ class DeviceWorker:
             self.logger.info("Code verification successful.")
 
             # 4. Switch over: update the symbolic link
-            # Use -n option with ln to avoid issues if 'current' is a dir
+            # Safety: ensure new venv Python exists before switching
+            if not (os.path.isfile(python_path) and os.access(python_path, os.X_OK)):
+                raise RuntimeError(f"New environment missing or not executable: {python_path}")
+
+            # Use -sfn with ln to atomically repoint 'current'
+            previous_path = active_path
             subprocess.run(["ln", "-sfn", inactive_path, link_path], check=True)
             self.logger.info(f"Switched 'current' link to point to {os.path.basename(inactive_path)}")
+
+            # Post-switch sanity check: verify ExecStart interpreter path exists
+            current_python = os.path.join(link_path, "venv", "bin", "python")
+            if not (os.path.isfile(current_python) and os.access(current_python, os.X_OK)):
+                # Roll back the link immediately to prevent service crash loops
+                self.logger.error(f"Post-switch check failed: {current_python} not present/executable. Reverting link.")
+                subprocess.run(["ln", "-sfn", previous_path, link_path], check=True)
+                raise RuntimeError("Post-switch venv check failed; reverted to previous version")
 
             # 5. Restart the service to apply the update
             self.logger.info("Restarting service to apply update...")
