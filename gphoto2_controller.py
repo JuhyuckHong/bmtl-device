@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 
 import json
 import subprocess
@@ -49,8 +49,6 @@ class GPhoto2Controller:
                 "resolution": "/main/imgsettings/imagesize",
                 "iso": "/main/imgsettings/iso",
                 "aperture": "/main/capturesettings/exposurecompensation",
-                "shutter_speed": "/main/capturesettings/shutterspeed",
-                "whitebalance": "/main/imgsettings/whitebalance",
                 "image_quality": "/main/capturesettings/imagequality",
                 "focus_mode": "/main/capturesettings/focusmode2",
             }
@@ -253,11 +251,8 @@ class GPhoto2Controller:
                 "resolution": "/main/imgsettings/imagesize",
                 "iso": "/main/imgsettings/iso",
                 "aperture": "/main/capturesettings/exposurecompensation",
-                "shutter_speed": "/main/capturesettings/shutterspeed",
-                "whitebalance": "/main/imgsettings/whitebalance",
                 "image_quality": "/main/capturesettings/imagequality",
                 "focus_mode": "/main/capturesettings/focusmode2",
-                "imageformat": "imageformat",
             }
 
             options: Dict[str, Any] = {}
@@ -286,13 +281,11 @@ class GPhoto2Controller:
                     option_payload["error"] = error_message
                     errors.append({"key": key, "error": error_message})
 
+
             alias_map = {
-                "shutter_speed": ["shutterspeed"],
-                "whitebalance": ["whiteBalance"],
-                "image_quality": ["imagequality"],
-                "focus_mode": ["focusmode2"],
+                "image_quality": ["imageQuality"],
+                "focus_mode": ["focusMode"],
                 "resolution": ["imageSize"],
-                "imageformat": ["imageFormat"],
             }
 
             for canonical, aliases in alias_map.items():

@@ -146,6 +146,7 @@ class DeviceWorker:
     # Calls were adapted from self.client.publish(...) to self._publish(...)
     # ##################################################################
 
+
     def get_enhanced_settings(self):
         """Return combined camera and device settings using camelCase keys."""
         try:
@@ -166,23 +167,15 @@ class DeviceWorker:
             schedule_settings = config_manager.read_config('schedule_settings.json') or {}
             image_settings = config_manager.read_config('image_settings.json') or {}
 
-            shutter_speed = (
-                camera_settings.get('shutter_speed')
-                or camera_settings.get('shutterspeed')
-                or '1/60'
-            )
-
             enhanced_settings = {
                 'iso': camera_settings.get('iso', 'auto'),
                 'aperture': camera_settings.get('aperture', 'f/2.8'),
-                'shutterSpeed': shutter_speed,
-                'whiteBalance': camera_settings.get('whiteBalance', camera_settings.get('whitebalance', 'auto')),
-                'focusMode': camera_settings.get('focus_mode', camera_settings.get('focusmode2', 'auto')),
+                'focusMode': camera_settings.get('focusMode', camera_settings.get('focus_mode', 'auto')),
+                'imageSize': camera_settings.get('imageSize', camera_settings.get('resolution', image_settings.get('image_size', '1920x1080'))),
+                'quality': camera_settings.get('imageQuality', camera_settings.get('image_quality', image_settings.get('quality', '85'))),
                 'startTime': schedule_settings.get('start_time', '08:00'),
                 'endTime': schedule_settings.get('end_time', '18:00'),
                 'captureInterval': schedule_settings.get('capture_interval', '10'),
-                'imageSize': image_settings.get('image_size', '1920x1080'),
-                'quality': image_settings.get('quality', '85'),
                 'format': image_settings.get('format', 'jpeg'),
             }
 
@@ -205,12 +198,9 @@ class DeviceWorker:
     def _prepare_camera_options(self, options):
         """Normalize camera option keys and expose alias metadata for clients."""
         alias_map = {
-            'shutter_speed': ['shutterSpeed', 'shutterspeed'],
-            'whitebalance': ['whiteBalance'],
             'image_quality': ['imageQuality'],
-            'focus_mode': ['focusMode', 'focusmode2'],
+            'focus_mode': ['focusMode'],
             'resolution': ['imageSize'],
-            'imageformat': ['imageFormat'],
         }
         prepared = {}
 
@@ -233,8 +223,6 @@ class DeviceWorker:
                 prepared[alias] = alias_payload
 
         return prepared
-
-
     def handle_settings_request_all(self, device_id):
         try:
             self.handle_settings_request_individual(device_id)
