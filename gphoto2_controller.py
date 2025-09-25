@@ -49,6 +49,8 @@ class GPhoto2Controller:
                 "resolution": "/main/imgsettings/imagesize",
                 "iso": "/main/imgsettings/iso",
                 "aperture": "/main/capturesettings/exposurecompensation",
+                "shutter_speed": "/main/capturesettings/shutterspeed",
+                "whitebalance": "/main/imgsettings/whitebalance",
                 "image_quality": "/main/capturesettings/imagequality",
                 "focus_mode": "/main/capturesettings/focusmode2",
             }
@@ -247,31 +249,82 @@ class GPhoto2Controller:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
 
+            requested_configs = {
+                "resolution": "/main/imgsettings/imagesize",
+                "iso": "/main/imgsettings/iso",
+                "aperture": "/main/capturesettings/exposurecompensation",
+                "shutter_speed": "/main/capturesettings/shutterspeed",
+                "whitebalance": "/main/imgsettings/whitebalance",
+                "image_quality": "/main/capturesettings/imagequality",
+                "focus_mode": "/main/capturesettings/focusmode2",
+                "imageformat": "imageformat",
+            }
+
+            options: Dict[str, Any] = {}
             settings: Dict[str, Any] = {}
-            configs_to_read = ['iso', 'aperture', 'shutterspeed', 'whitebalance', 'imageformat']
+            errors: List[Dict[str, str]] = []
+            success_flags: List[bool] = []
 
-            for config in configs_to_read:
-                try:
-                    result = subprocess.run(
-                        ['gphoto2', '--get-config', config],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                    )
-                    if result.returncode == 0:
-                        for line in result.stdout.split('\n'):
-                            if line.strip().startswith('Current:'):
-                                value = line.split(':', 1)[1].strip()
-                                settings[config] = value
-                                break
-                except Exception as exc:  # pragma: no cover - defensive guard
-                    self.logger.error("Error reading %s: %s", config, exc)
+            for key, config_path in requested_configs.items():
+                details = self._get_config_details(config_path)
+                option_payload = {
+                    "label": details.get("label"),
+                    "type": details.get("type"),
+                    "read_only": details.get("read_only"),
+                    "current": details.get("current"),
+                    "choices": details.get("choices", []),
+                }
+                options[key] = option_payload
 
-            return {
-                "success": True,
+                is_success = details.get("success", False)
+                success_flags.append(is_success)
+
+                if is_success and details.get("current") is not None:
+                    settings[key] = details["current"]
+                else:
+                    error_message = details.get("error", "Unknown error")
+                    option_payload["error"] = error_message
+                    errors.append({"key": key, "error": error_message})
+
+            alias_map = {
+                "shutter_speed": ["shutterspeed"],
+                "whitebalance": ["whiteBalance"],
+                "image_quality": ["imagequality"],
+                "focus_mode": ["focusmode2"],
+                "resolution": ["imageSize"],
+                "imageformat": ["imageFormat"],
+            }
+
+            for canonical, aliases in alias_map.items():
+                if canonical in settings:
+                    for alias in aliases:
+                        settings.setdefault(alias, settings[canonical])
+                if canonical in options:
+                    for alias in aliases:
+                        if alias not in options:
+                            alias_payload = dict(options[canonical])
+                            alias_payload["alias_for"] = canonical
+                            options[alias] = alias_payload
+
+            any_success = any(success_flags)
+            all_success = all(success_flags) if success_flags else False
+
+            response: Dict[str, Any] = {
+                "success": any_success,
                 "settings": settings,
+                "options": options,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
+
+            if not any_success:
+                response["error"] = "Failed to fetch current camera settings via gphoto2"
+
+            if errors:
+                response["errors"] = errors
+                if any_success and not all_success:
+                    response["partial_success"] = True
+
+            return response
 
         except Exception as exc:  # pragma: no cover - defensive guard
             self.logger.error("Error getting current settings: %s", exc)

@@ -76,7 +76,7 @@ class DeviceWorker:
         self.logger.info("Device worker started.")
         signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
         signal.signal(signal.SIGINT, self._handle_shutdown_signal)
-        
+
         command_handlers = {
             'settings_request_all': self.handle_settings_request_all,
             'settings_request_individual': self.handle_settings_request_individual,
@@ -103,7 +103,7 @@ class DeviceWorker:
                     continue
 
                 self.logger.info(f"Received task: {task.get('command')}")
-                
+
                 command = task.get('command')
                 payload = task.get('payload')
                 device_id = task.get('device_id')
@@ -149,18 +149,35 @@ class DeviceWorker:
     def get_enhanced_settings(self):
         """Return combined camera and device settings using camelCase keys."""
         try:
-            gphoto_settings = self.gphoto_controller.get_current_settings()
-            base_settings = gphoto_settings.get('settings', {}) if gphoto_settings.get('success') else {}
+            gphoto_response = self.gphoto_controller.get_current_settings()
+            if isinstance(gphoto_response, dict):
+                camera_settings = gphoto_response.get('settings', {}) or {}
+                camera_options_raw = gphoto_response.get('options', {}) or {}
+                camera_success = bool(gphoto_response.get('success'))
+                camera_errors = gphoto_response.get('errors', []) or []
+                camera_partial = bool(gphoto_response.get('partial_success', False))
+            else:
+                camera_settings = {}
+                camera_options_raw = {}
+                camera_success = False
+                camera_errors = []
+                camera_partial = False
 
             schedule_settings = config_manager.read_config('schedule_settings.json') or {}
             image_settings = config_manager.read_config('image_settings.json') or {}
 
-            shutter_speed = base_settings.get('shutter_speed') or base_settings.get('shutterspeed') or '1/60'
+            shutter_speed = (
+                camera_settings.get('shutter_speed')
+                or camera_settings.get('shutterspeed')
+                or '1/60'
+            )
 
             enhanced_settings = {
-                'iso': base_settings.get('iso', 'auto'),
-                'aperture': base_settings.get('aperture', 'f/2.8'),
+                'iso': camera_settings.get('iso', 'auto'),
+                'aperture': camera_settings.get('aperture', 'f/2.8'),
                 'shutterSpeed': shutter_speed,
+                'whiteBalance': camera_settings.get('whiteBalance', camera_settings.get('whitebalance', 'auto')),
+                'focusMode': camera_settings.get('focus_mode', camera_settings.get('focusmode2', 'auto')),
                 'startTime': schedule_settings.get('start_time', '08:00'),
                 'endTime': schedule_settings.get('end_time', '18:00'),
                 'captureInterval': schedule_settings.get('capture_interval', '10'),
@@ -168,10 +185,54 @@ class DeviceWorker:
                 'quality': image_settings.get('quality', '85'),
                 'format': image_settings.get('format', 'jpeg'),
             }
-            return enhanced_settings
+
+            camera_options = self._prepare_camera_options(camera_options_raw)
+            camera_meta = {
+                'success': camera_success,
+                'errors': camera_errors,
+                'partial_success': camera_partial,
+            }
+            if not camera_meta.get('errors'):
+                camera_meta.pop('errors', None)
+            if not camera_meta.get('partial_success'):
+                camera_meta.pop('partial_success', None)
+
+            return enhanced_settings, camera_options, camera_meta
         except Exception as e:
             self.logger.error(f"Error getting enhanced settings: {e}")
-            return {}
+            return {}, {}, {'success': False, 'errors': [str(e)]}
+
+    def _prepare_camera_options(self, options):
+        """Normalize camera option keys and expose alias metadata for clients."""
+        alias_map = {
+            'shutter_speed': ['shutterSpeed', 'shutterspeed'],
+            'whitebalance': ['whiteBalance'],
+            'image_quality': ['imageQuality'],
+            'focus_mode': ['focusMode', 'focusmode2'],
+            'resolution': ['imageSize'],
+            'imageformat': ['imageFormat'],
+        }
+        prepared = {}
+
+        for key, raw in (options or {}).items():
+            payload = dict(raw or {})
+            payload.setdefault('canonical_key', key)
+            payload.setdefault('choices', [])
+            prepared[key] = payload
+
+            alias_list = alias_map.get(key, [])
+            if alias_list:
+                payload['aliases'] = [key] + alias_list
+
+            for alias in alias_list:
+                if alias in prepared:
+                    continue
+                alias_payload = dict(payload)
+                alias_payload.pop('aliases', None)
+                alias_payload['alias_for'] = key
+                prepared[alias] = alias_payload
+
+        return prepared
 
 
     def handle_settings_request_all(self, device_id):
@@ -183,13 +244,26 @@ class DeviceWorker:
 
     def handle_settings_request_individual(self, device_id):
         try:
-            enhanced_settings = self.get_enhanced_settings()
+            settings_payload, camera_options, camera_meta = self.get_enhanced_settings()
             response = {
                 'response_type': 'settings',
                 'module_id': f"bmotion{device_id}",
-                'settings': enhanced_settings,
+                'settings': settings_payload,
+                'camera_options': camera_options,
                 'timestamp': datetime.now(timezone.utc).isoformat()
             }
+
+            if isinstance(camera_meta, dict):
+                status = {}
+                if 'success' in camera_meta:
+                    status['success'] = camera_meta['success']
+                if camera_meta.get('errors'):
+                    status['errors'] = camera_meta['errors']
+                if camera_meta.get('partial_success'):
+                    status['partial_success'] = True
+                if status:
+                    response['camera_options_status'] = status
+
             self._publish(f"bmtl/response/settings/{device_id}", response)
             self.logger.info("Sent individual settings response")
         except Exception as e:
@@ -546,7 +620,7 @@ class DeviceWorker:
         """
         base_dir = "/opt/bmtl-device"
         link_path = os.path.join(base_dir, "current")
-        
+
         try:
             # 1. Determine active and inactive directories
             if not os.path.islink(link_path):
@@ -554,7 +628,7 @@ class DeviceWorker:
 
             active_path = os.path.realpath(link_path)
             active_dir_name = os.path.basename(active_path)
-            
+
             if active_dir_name == "v1":
                 inactive_path = os.path.join(base_dir, "v2")
             elif active_dir_name == "v2":
@@ -566,7 +640,7 @@ class DeviceWorker:
 
             # 2. Fetch new code into inactive directory
             git_repo_url = self.git_repo_url
-            
+
             if os.path.exists(inactive_path):
                 subprocess.run(f"rm -rf {inactive_path}", shell=True, check=True)
 
@@ -622,7 +696,7 @@ class DeviceWorker:
             if isinstance(e, subprocess.CalledProcessError):
                 self.logger.error(f"Command stdout: {e.stdout}")
                 self.logger.error(f"Command stderr: {e.stderr}")
-            
+
             # Clean up the failed update directory
             if 'inactive_path' in locals() and os.path.exists(inactive_path):
                 subprocess.run(f"rm -rf {inactive_path}", shell=True)
