@@ -107,10 +107,15 @@ class SafeFileConfig:
                 self._cache[filename] = data
                 self._last_modified[filename] = datetime.now()
 
-                self.logger.info(f"Config written: {filename}")
+                # Include resolved path in logs to aid debugging across tmp/persistent dirs
+                self.logger.info(f"Config written: {filename} -> {filepath}")
 
         except Exception as e:
-            self.logger.error(f"Failed to write config {filename}: {e}")
+            # Include resolved path for easier diagnosis
+            try:
+                self.logger.error(f"Failed to write config {filename} at {filepath}: {e}")
+            except Exception:
+                self.logger.error(f"Failed to write config {filename}: {e}")
             raise
 
     def read_config(self, filename, use_cache=True):
