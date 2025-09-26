@@ -461,9 +461,24 @@ class BMTLCameraDaemon:
             getattr(inotify_simple.flags, 'CREATE', inotify_simple.flags.MOVED_TO)
         )
 
-        # Watch the config directory
-        inotify.add_watch(self.config_path, watch_flags)
-        self.logger.info(f"Watching config directory: {self.config_path}")
+        # Watch the runtime and persistent config directories
+        persistent_dir = getattr(config_manager, 'persistent_path', '/etc/bmtl-device')
+        watch_map = {}
+
+        try:
+            wd_runtime = inotify.add_watch(self.config_path, watch_flags)
+            watch_map[wd_runtime] = self.config_path
+            self.logger.info(f"Watching config directory: {self.config_path}")
+        except Exception as e:
+            self.logger.warning(f"Failed to watch runtime config directory {self.config_path}: {e}")
+
+        if persistent_dir != self.config_path:
+            try:
+                wd_persist = inotify.add_watch(persistent_dir, watch_flags)
+                watch_map[wd_persist] = persistent_dir
+                self.logger.info(f"Watching persistent config directory: {persistent_dir}")
+            except Exception as e:
+                self.logger.warning(f"Failed to watch persistent config directory {persistent_dir}: {e}")
 
         try:
             while self.running:
@@ -472,7 +487,10 @@ class BMTLCameraDaemon:
 
                 for event in events:
                     if event.name:
-                        self.logger.info(f"Config file changed detected: {event.name} (flags: {event.mask})")
+                        directory = watch_map.get(event.wd, '?')
+                        self.logger.info(
+                            f"Config file change detected: {os.path.join(directory, event.name)} (flags: {event.mask})"
+                        )
                         self.handle_config_change(event.name)
 
         except Exception as e:
