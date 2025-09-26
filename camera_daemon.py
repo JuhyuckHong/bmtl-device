@@ -20,6 +20,24 @@ CAMERA_STATS_FILE = 'camera_stats.json'
 CAMERA_STATUS_FILE = 'camera_status.json'
 CAMERA_RESULT_FILE = 'camera_result.json'
 
+# File watch allowlists
+RUNTIME_WATCH_FILES = {
+    'camera_config.json',
+    'camera_command.json',
+    'schedule_settings.json',
+    'image_settings.json',
+    'camera_settings.json',
+    'camera_stats.json',
+    'camera_status.json',
+    'camera_result.json',
+}
+
+PERSISTENT_WATCH_FILES = {
+    'camera_schedule.json',
+    'camera_default_config.json',
+    'device_settings.json',
+}
+
 DEFAULT_CAMERA_CONFIG = {
     'iso': 'auto',
     'shutterspeed': '1/60',
@@ -291,6 +309,9 @@ class BMTLCameraDaemon:
         self.schedule_thread = None
         self.upload_mover_thread = None
         self.current_schedule = copy.deepcopy(DEFAULT_CAMERA_SCHEDULE)
+        # Debounce settings for noisy file change events
+        self._event_debounce = {}
+        self._debounce_sec = 0.5
 
         self.setup_logging()
 
@@ -451,7 +472,7 @@ class BMTLCameraDaemon:
             self.logger.error(f"Error during startup briefing: {e}")
 
     def watch_config_files(self):
-        """Watch for configuration file changes using inotify"""
+        """Watch for configuration file changes using inotify with filtering and debounce."""
         inotify = inotify_simple.INotify()
         # Expand events to catch atomic writes and file creation reliably
         watch_flags = (
@@ -486,12 +507,37 @@ class BMTLCameraDaemon:
                 events = inotify.read(timeout=1000)  # 1 second timeout
 
                 for event in events:
-                    if event.name:
-                        directory = watch_map.get(event.wd, '?')
-                        self.logger.info(
-                            f"Config file change detected: {os.path.join(directory, event.name)} (flags: {event.mask})"
-                        )
-                        self.handle_config_change(event.name)
+                    if not event.name:
+                        continue
+
+                    directory = watch_map.get(event.wd, '?')
+                    abs_path = os.path.join(directory, event.name)
+
+                    # Per-directory allowlist
+                    filename = event.name
+                    if directory == self.config_path:
+                        allowed = filename in RUNTIME_WATCH_FILES
+                    elif directory == persistent_dir:
+                        allowed = filename in PERSISTENT_WATCH_FILES
+                    else:
+                        allowed = False
+
+                    if not allowed:
+                        self.logger.debug(f"Ignoring change outside allowlist: {abs_path}")
+                        continue
+
+                    # Debounce rapidly repeated events
+                    now = time.time()
+                    last = self._event_debounce.get(abs_path, 0)
+                    if (now - last) < self._debounce_sec:
+                        self.logger.debug(f"Debounced duplicate event: {abs_path}")
+                        continue
+                    self._event_debounce[abs_path] = now
+
+                    self.logger.info(
+                        f"Config file change detected: {abs_path} (flags: {event.mask})"
+                    )
+                    self.handle_config_change(filename)
 
         except Exception as e:
             self.logger.error(f"Error in config file watcher: {e}")
