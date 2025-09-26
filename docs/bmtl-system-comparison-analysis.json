@@ -67,10 +67,10 @@
           "aperture": "string"
         },
         "device_format": {
-          "startTime": "string (HH:MM)",
-          "endTime": "string (HH:MM)",
-          "captureInterval": "string",
-          "imageSize": "string",
+          "start_time": "string (HH:MM)",
+          "end_time": "string (HH:MM)",
+          "capture_interval": "string",
+          "resolution": "string",
           "quality": "string",
           "iso": "string",
           "format": "string",

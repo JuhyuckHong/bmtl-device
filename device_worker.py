@@ -148,7 +148,7 @@ class DeviceWorker:
 
 
     def get_enhanced_settings(self):
-        """Return combined camera and device settings using camelCase keys."""
+        """Return combined camera and device settings using snake_case keys."""
         try:
             gphoto_response = self.gphoto_controller.get_current_settings()
             if isinstance(gphoto_response, dict):
@@ -170,12 +170,12 @@ class DeviceWorker:
             enhanced_settings = {
                 'iso': camera_settings.get('iso', 'auto'),
                 'aperture': camera_settings.get('aperture', 'f/2.8'),
-                'focusMode': camera_settings.get('focusMode', camera_settings.get('focus_mode', 'auto')),
-                'imageSize': camera_settings.get('imageSize', camera_settings.get('resolution', image_settings.get('image_size', '1920x1080'))),
-                'quality': camera_settings.get('imageQuality', camera_settings.get('image_quality', image_settings.get('quality', '85'))),
-                'startTime': schedule_settings.get('start_time', '08:00'),
-                'endTime': schedule_settings.get('end_time', '18:00'),
-                'captureInterval': schedule_settings.get('capture_interval', '10'),
+                'focus_mode': camera_settings.get('focus_mode', 'auto'),
+                'resolution': camera_settings.get('resolution', image_settings.get('image_size', '1920x1080')),
+                'image_quality': camera_settings.get('image_quality', image_settings.get('quality', '85')),
+                'start_time': schedule_settings.get('start_time', '08:00'),
+                'end_time': schedule_settings.get('end_time', '18:00'),
+                'capture_interval': schedule_settings.get('capture_interval', '10'),
                 'format': image_settings.get('format', 'jpeg'),
             }
 
@@ -196,12 +196,7 @@ class DeviceWorker:
             return {}, {}, {'success': False, 'errors': [str(e)]}
 
     def _prepare_camera_options(self, options):
-        """Normalize camera option keys and expose alias metadata for clients."""
-        alias_map = {
-            'image_quality': ['imageQuality'],
-            'focus_mode': ['focusMode'],
-            'resolution': ['imageSize'],
-        }
+        """Normalize camera option keys for consistency."""
         prepared = {}
 
         for key, raw in (options or {}).items():
@@ -209,18 +204,6 @@ class DeviceWorker:
             payload.setdefault('canonical_key', key)
             payload.setdefault('choices', [])
             prepared[key] = payload
-
-            alias_list = alias_map.get(key, [])
-            if alias_list:
-                payload['aliases'] = [key] + alias_list
-
-            for alias in alias_list:
-                if alias in prepared:
-                    continue
-                alias_payload = dict(payload)
-                alias_payload.pop('aliases', None)
-                alias_payload['alias_for'] = key
-                prepared[alias] = alias_payload
 
         return prepared
     def handle_settings_request_all(self, device_id):
@@ -278,24 +261,24 @@ class DeviceWorker:
                 gphoto_settings['iso'] = settings_data['iso']
             if 'aperture' in settings_data:
                 gphoto_settings['aperture'] = settings_data['aperture']
-            if 'shutterSpeed' in settings_data:
-                gphoto_settings['shutter_speed'] = settings_data['shutterSpeed']
+            if 'shutter_speed' in settings_data:
+                gphoto_settings['shutter_speed'] = settings_data['shutter_speed']
             if 'image_quality' in settings_data:
                 gphoto_settings['image_quality'] = settings_data['image_quality']
             if 'focus_mode' in settings_data:
                 gphoto_settings['focus_mode'] = settings_data['focus_mode']
-            if 'whiteBalance' in settings_data:
-                gphoto_settings['whitebalance'] = settings_data['whiteBalance']
+            if 'white_balance' in settings_data:
+                gphoto_settings['whitebalance'] = settings_data['white_balance']
             if 'whitebalance' in settings_data:
                 gphoto_settings['whitebalance'] = settings_data['whitebalance']
-            if 'startTime' in settings_data:
-                schedule_settings['start_time'] = settings_data['startTime']
-            if 'endTime' in settings_data:
-                schedule_settings['end_time'] = settings_data['endTime']
-            if 'captureInterval' in settings_data:
-                schedule_settings['capture_interval'] = settings_data['captureInterval']
-            if 'imageSize' in settings_data:
-                image_settings['image_size'] = settings_data['imageSize']
+            if 'start_time' in settings_data:
+                schedule_settings['start_time'] = settings_data['start_time']
+            if 'end_time' in settings_data:
+                schedule_settings['end_time'] = settings_data['end_time']
+            if 'capture_interval' in settings_data:
+                schedule_settings['capture_interval'] = settings_data['capture_interval']
+            if 'resolution' in settings_data:
+                image_settings['image_size'] = settings_data['resolution']
             if 'quality' in settings_data:
                 image_settings['quality'] = settings_data['quality']
             if 'format' in settings_data:

@@ -282,22 +282,6 @@ class GPhoto2Controller:
                     errors.append({"key": key, "error": error_message})
 
 
-            alias_map = {
-                "image_quality": ["imageQuality"],
-                "focus_mode": ["focusMode"],
-                "resolution": ["imageSize"],
-            }
-
-            for canonical, aliases in alias_map.items():
-                if canonical in settings:
-                    for alias in aliases:
-                        settings.setdefault(alias, settings[canonical])
-                if canonical in options:
-                    for alias in aliases:
-                        if alias not in options:
-                            alias_payload = dict(options[canonical])
-                            alias_payload["alias_for"] = canonical
-                            options[alias] = alias_payload
 
             any_success = any(success_flags)
             all_success = all(success_flags) if success_flags else False
