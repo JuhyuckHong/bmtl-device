@@ -183,6 +183,16 @@ echo "🧪 Validating bytecode compilation..."
 
 deactivate
 
+echo "🔍 Verifying venv installation..."
+if [ ! -f "$TARGET_DIR/venv/bin/python" ]; then
+    echo "❌ Virtual environment was not created properly"
+    if [ "$UPDATE_MODE" = "update" ]; then
+        echo "💥 Update failed due to venv creation failure, initiating rollback..."
+        rollback_on_failure
+    fi
+    exit 1
+fi
+
 echo "🔗 Updating current symlink"
 ln -sfn "$TARGET_DIR" "$CURRENT_LINK"
 
