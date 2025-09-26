@@ -465,6 +465,7 @@ class BMTLCameraDaemon:
 
                 for event in events:
                     if event.name:
+                        self.logger.info(f"Config file changed detected: {event.name} (flags: {event.mask})")
                         self.handle_config_change(event.name)
 
         except Exception as e:
@@ -475,6 +476,7 @@ class BMTLCameraDaemon:
     def handle_config_change(self, filename):
         """Handle configuration file changes"""
         try:
+            self.logger.info(f"Processing config change for: {filename}")
             if filename == 'camera_config.json':
                 config = read_camera_config()
                 if config:
@@ -505,12 +507,19 @@ class BMTLCameraDaemon:
                 if image_settings:
                     self.logger.info(f"Image settings updated: {image_settings}")
                     self.camera.apply_config(image_settings)
+                else:
+                    self.logger.warning(f"Failed to read image_settings.json or file is empty")
 
             elif filename == 'camera_settings.json':
                 camera_settings = config_manager.read_config('camera_settings.json')
                 if camera_settings:
                     self.logger.info(f"Camera settings updated: {camera_settings}")
                     self.camera.apply_config(camera_settings)
+                else:
+                    self.logger.warning(f"Failed to read camera_settings.json or file is empty")
+
+            else:
+                self.logger.debug(f"Ignoring config file change: {filename}")
 
         except Exception as e:
             self.logger.error(f"Error handling config change for {filename}: {e}")
