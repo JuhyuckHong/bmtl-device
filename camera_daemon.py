@@ -39,10 +39,25 @@ PERSISTENT_WATCH_FILES = {
 }
 
 DEFAULT_CAMERA_CONFIG = {
-    'iso': 'auto',
-    'shutterspeed': '1/60',
-    'aperture': 'f/5.6',
-    'whitebalance': 'Auto',
+    # Apply only the requested defaults and no more
+    'iso': '800',
+    # In this project, 'aperture' is mapped to exposure compensation
+    'aperture': '-3',
+    'focus_mode': 'MF (fixed)',
+    'image_quality': 'JPEG Fine',
+}
+
+# Defaults for schedule and image settings
+DEFAULT_SCHEDULE_SETTINGS = {
+    'start_time': '08:00',
+    'end_time': '18:00',
+    'capture_interval': '10',
+}
+
+DEFAULT_IMAGE_SETTINGS = {
+    'image_size': '3696x2448',
+    'quality': '보통',
+    'format': 'jpeg',
 }
 
 DEFAULT_CAMERA_SCHEDULE = {
@@ -133,6 +148,7 @@ class CameraController:
                 'shutter_speed': 'shutterspeed',
                 'image_quality': 'imagequality',
                 'focus_mode': 'focusmode2',
+                'white_balance': 'whitebalance',
             }
             applied_config = {}
             for setting, value in (config or {}).items():
@@ -140,6 +156,11 @@ class CameraController:
                 gphoto_key = setting_map.get(canonical_key)
                 if not gphoto_key:
                     self.logger.debug("Skipping unsupported gphoto2 setting: %s", setting)
+                    continue
+
+                # Apply only if the value actually changed
+                if self.current_config.get(canonical_key) == value:
+                    self.logger.debug("No change for %s; skipping apply", canonical_key)
                     continue
 
                 cmd = ['gphoto2', '--set-config', f'{gphoto_key}={value}']
@@ -368,6 +389,9 @@ class BMTLCameraDaemon:
             (CAMERA_STATS_FILE, DEFAULT_CAMERA_STATS),
             (CAMERA_STATUS_FILE, DEFAULT_CAMERA_STATUS),
             (CAMERA_RESULT_FILE, DEFAULT_CAMERA_RESULT),
+            # Also seed optional settings files with requested defaults
+            ('schedule_settings.json', DEFAULT_SCHEDULE_SETTINGS),
+            ('image_settings.json', DEFAULT_IMAGE_SETTINGS),
         )
 
         for filename, template in defaults:
@@ -649,10 +673,10 @@ class BMTLCameraDaemon:
             )
             interval = self._normalize_interval(schedule_settings.get('capture_interval'), existing_interval)
 
+            # Only change the enabled flag if it is explicitly provided.
+            # This prevents unintended auto-enable when updating time/interval only.
             if 'enabled' in schedule_settings:
                 enabled_flag = schedule_settings.get('enabled')
-            elif schedule_settings:
-                enabled_flag = True
             else:
                 enabled_flag = existing_schedule.get('enabled', False)
 

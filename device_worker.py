@@ -168,11 +168,13 @@ class DeviceWorker:
             image_settings = config_manager.read_config('image_settings.json') or {}
 
             enhanced_settings = {
-                'iso': camera_settings.get('iso', 'auto'),
-                'aperture': camera_settings.get('aperture', 'f/2.8'),
-                'focus_mode': camera_settings.get('focus_mode', 'auto'),
-                'resolution': camera_settings.get('resolution', image_settings.get('image_size', '1920x1080')),
-                'image_quality': camera_settings.get('image_quality', image_settings.get('quality', '85')),
+                # Requested defaults when values are missing
+                'iso': camera_settings.get('iso', '800'),
+                # In this project, 'aperture' tracks exposure compensation
+                'aperture': camera_settings.get('aperture', '-3'),
+                'focus_mode': camera_settings.get('focus_mode', 'MF (fixed)'),
+                'resolution': camera_settings.get('resolution', image_settings.get('image_size', '3696x2448')),
+                'image_quality': camera_settings.get('image_quality', 'JPEG Fine'),
                 'start_time': schedule_settings.get('start_time', '08:00'),
                 'end_time': schedule_settings.get('end_time', '18:00'),
                 'capture_interval': schedule_settings.get('capture_interval', '10'),
@@ -303,27 +305,39 @@ class DeviceWorker:
                         camera_config_payload[target_key] = value
 
                     if camera_config_payload:
+                        # Write only when values actually change; persist full desired state
                         existing_config = config_manager.read_config('camera_config.json') or {}
-                        existing_config.update(camera_config_payload)
-                        config_manager.write_config('camera_config.json', existing_config)
+                        diff_payload = {k: v for k, v in camera_config_payload.items() if existing_config.get(k) != v}
+                        if diff_payload:
+                            new_config = dict(existing_config)
+                            new_config.update(diff_payload)
+                            config_manager.write_config('camera_config.json', new_config)
 
                     results['gphoto_settings'] = {
                         'success': True,
                         'errors': [],
-                        'queued_settings': camera_config_payload,
+                        'queued_settings': diff_payload if 'diff_payload' in locals() else {},
                     }
                 except Exception as exc:
                     results['gphoto_settings']['success'] = False
                     results['gphoto_settings']['errors'].append(str(exc))
             if schedule_settings:
                 try:
-                    config_manager.write_config('schedule_settings.json', schedule_settings)
+                    # Avoid spurious writes: only persist changed schedule fields
+                    existing_sched = config_manager.read_config('schedule_settings.json') or {}
+                    changed = {k: v for k, v in schedule_settings.items() if existing_sched.get(k) != v}
+                    if changed:
+                        config_manager.write_config('schedule_settings.json', {**existing_sched, **changed})
                 except Exception as exc:
                     results['schedule_settings']['success'] = False
                     results['schedule_settings']['errors'].append(str(exc))
             if image_settings:
                 try:
-                    config_manager.write_config('image_settings.json', image_settings)
+                    # Avoid spurious writes: only persist changed image fields
+                    existing_img = config_manager.read_config('image_settings.json') or {}
+                    changed_img = {k: v for k, v in image_settings.items() if existing_img.get(k) != v}
+                    if changed_img:
+                        config_manager.write_config('image_settings.json', {**existing_img, **changed_img})
                 except Exception as exc:
                     results['image_settings']['success'] = False
                     results['image_settings']['errors'].append(str(exc))
