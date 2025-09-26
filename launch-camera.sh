@@ -27,5 +27,16 @@ resolve_python() {
 }
 
 PYTHON_BIN="$(resolve_python)" || exit 203
-exec "$PYTHON_BIN" "$CUR_LINK/camera_daemon.py"
 
+CUR_TARGET=$(readlink -f "$CUR_LINK" || true)
+MAIN_PATH="$CUR_LINK/camera_daemon.py"
+if [ -n "$CUR_TARGET" ] && [ -f "$CUR_TARGET/camera_daemon.py" ]; then
+  MAIN_PATH="$CUR_TARGET/camera_daemon.py"
+  export PYTHONPATH="$CUR_TARGET:${PYTHONPATH:-}"
+  cd "$CUR_TARGET" || true
+else
+  export PYTHONPATH="$CUR_LINK:${PYTHONPATH:-}"
+  cd "$CUR_LINK" 2>/dev/null || true
+fi
+
+exec "$PYTHON_BIN" "$MAIN_PATH"

@@ -32,5 +32,19 @@ resolve_python() {
 }
 
 PYTHON_BIN="$(resolve_python)" || exit 203
-exec "$PYTHON_BIN" "$CUR_LINK/main.py"
 
+# Prefer executing from the resolved slot to avoid symlink flip races
+CUR_TARGET=$(readlink -f "$CUR_LINK" || true)
+MAIN_PATH="$CUR_LINK/main.py"
+if [ -n "$CUR_TARGET" ] && [ -f "$CUR_TARGET/main.py" ]; then
+  MAIN_PATH="$CUR_TARGET/main.py"
+  # Stabilize imports against symlink changes during startup
+  export PYTHONPATH="$CUR_TARGET:${PYTHONPATH:-}"
+  cd "$CUR_TARGET" || true
+else
+  # Fallback to symlink path
+  export PYTHONPATH="$CUR_LINK:${PYTHONPATH:-}"
+  cd "$CUR_LINK" 2>/dev/null || true
+fi
+
+exec "$PYTHON_BIN" "$MAIN_PATH"
