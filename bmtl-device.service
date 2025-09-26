@@ -11,7 +11,7 @@ WorkingDirectory=/opt/bmtl-device/current
 Environment=PYTHONPATH=/opt/bmtl-device/current
 # Ensure system binaries like git and gphoto2 are available
 Environment=PATH=/opt/bmtl-device/current/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/opt/bmtl-device/current/venv/bin/python /opt/bmtl-device/current/main.py
+ExecStart=/opt/bmtl-device/launch-device.sh
 Restart=always
 RestartSec=10
 StandardOutput=journal

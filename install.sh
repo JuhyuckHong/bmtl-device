@@ -196,6 +196,11 @@ fi
 echo "🔗 Updating current symlink"
 ln -sfn "$TARGET_DIR" "$CURRENT_LINK"
 
+# Install stable launchers outside of the moving 'current' symlink
+echo "🔧 Installing stable launchers..."
+sudo install -m 0755 "$TARGET_DIR/launch-device.sh" "/opt/bmtl-device/launch-device.sh"
+sudo install -m 0755 "$TARGET_DIR/launch-camera.sh" "/opt/bmtl-device/launch-camera.sh"
+
 # Create config and runtime directories
 sudo mkdir -p /etc/bmtl-device
 sudo mkdir -p /opt/bmtl-device/tmp

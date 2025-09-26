@@ -9,7 +9,7 @@ User=pi
 Group=pi
 WorkingDirectory=/opt/bmtl-device/current
 Environment=PYTHONPATH=/opt/bmtl-device/current
-ExecStart=/opt/bmtl-device/current/venv/bin/python /opt/bmtl-device/current/camera_daemon.py
+ExecStart=/opt/bmtl-device/launch-camera.sh
 Restart=always
 RestartSec=5
 StandardOutput=journal

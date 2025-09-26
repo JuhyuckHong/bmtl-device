@@ -35,6 +35,10 @@ class DeviceWorker:
         self.setup_logging()
         self.load_device_info()
 
+        # Ensure only one software update runs at a time
+        self._update_lock = threading.Lock()
+        self._update_thread = None
+
     def setup_logging(self):
         os.makedirs(self.log_dir, exist_ok=True)
         log_file = os.path.join(self.log_dir, "device_worker.log")
@@ -565,26 +569,51 @@ class DeviceWorker:
 
     def handle_sw_update(self, device_id, payload):
         """
-        Handles the software update request by initiating a robust Blue/Green update process
-        in a background thread.
+        Handle software update request.
+        - Ensures only one update runs at a time to avoid races that can remove
+          the active slot while the service restarts (sporadic 203/EXEC issues).
+        - Starts the robust Blue/Green update in a background thread.
         """
         try:
-            response = {
+            # Concurrency guard: reject or ignore if an update is already running
+            if self._update_lock.locked() or (self._update_thread and self._update_thread.is_alive()):
+                self.logger.warning("Update request ignored: another update is already in progress.")
+                self._publish(f"bmtl/response/sw-update/{device_id}", {
+                    "response_type": "sw_update_result",
+                    "module_id": f"bmotion{device_id}",
+                    "success": False,
+                    "message": "Update already in progress. Ignoring duplicate request.",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+                return
+
+            # Acknowledge start
+            self._publish(f"bmtl/response/sw-update/{device_id}", {
                 "response_type": "sw_update_result",
                 "module_id": f"bmotion{device_id}",
                 "success": True,
                 "message": "Robust software update process initiated.",
                 "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            self._publish(f"bmtl/response/sw-update/{device_id}", response)
+            })
             self.logger.info("Software update initiated. Starting robust update process in background.")
 
-            update_thread = threading.Thread(
-                target=self._execute_robust_update,
-                args=(device_id, payload),
-                daemon=True
-            )
-            update_thread.start()
+            # Wrap execution with the lock to serialize updates
+            def run_with_lock():
+                acquired = self._update_lock.acquire(blocking=False)
+                if not acquired:
+                    # Another update slipped in; just log and return
+                    self.logger.warning("Skipped starting update thread: lock already held.")
+                    return
+                try:
+                    self._execute_robust_update(device_id, payload)
+                finally:
+                    try:
+                        self._update_lock.release()
+                    except Exception:
+                        pass
+
+            self._update_thread = threading.Thread(target=run_with_lock, daemon=True, name="UpdateThread")
+            self._update_thread.start()
 
         except Exception as e:
             self.logger.error(f"Error initiating software update thread: {e}")
