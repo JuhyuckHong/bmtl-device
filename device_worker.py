@@ -277,12 +277,26 @@ class DeviceWorker:
                 gphoto_settings['whitebalance'] = settings_data['white_balance']
             if 'whitebalance' in settings_data:
                 gphoto_settings['whitebalance'] = settings_data['whitebalance']
+            # Schedule controls
             if 'start_time' in settings_data:
                 schedule_settings['start_time'] = settings_data['start_time']
             if 'end_time' in settings_data:
                 schedule_settings['end_time'] = settings_data['end_time']
             if 'capture_interval' in settings_data:
                 schedule_settings['capture_interval'] = settings_data['capture_interval']
+            # Accept schedule enable flag from UI/payload (boolean or truthy string)
+            if 'enabled' in settings_data:
+                try:
+                    val = settings_data['enabled']
+                    # Normalize common truthy/falsey representations
+                    if isinstance(val, str):
+                        normalized = val.strip().lower() in {'1', 'true', 't', 'yes', 'y', 'on'}
+                    else:
+                        normalized = bool(val)
+                    schedule_settings['enabled'] = normalized
+                except Exception:
+                    # Ignore malformed values; do not flip current enabled state implicitly
+                    pass
             if 'resolution' in settings_data:
                 image_settings['image_size'] = settings_data['resolution']
             if 'quality' in settings_data:
