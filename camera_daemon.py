@@ -500,6 +500,18 @@ class BMTLCameraDaemon:
                     self.logger.info(f"Camera schedule updated: {schedule}")
                     self.current_schedule = schedule
 
+            elif filename == 'image_settings.json':
+                image_settings = config_manager.read_config('image_settings.json')
+                if image_settings:
+                    self.logger.info(f"Image settings updated: {image_settings}")
+                    self.camera.apply_config(image_settings)
+
+            elif filename == 'camera_settings.json':
+                camera_settings = config_manager.read_config('camera_settings.json')
+                if camera_settings:
+                    self.logger.info(f"Camera settings updated: {camera_settings}")
+                    self.camera.apply_config(camera_settings)
+
         except Exception as e:
             self.logger.error(f"Error handling config change for {filename}: {e}")
 
