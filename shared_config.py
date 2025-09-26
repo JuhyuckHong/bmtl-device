@@ -14,16 +14,42 @@ class SafeFileConfig:
     Uses tmpfs for performance and implements file locking for safety
     """
 
-    def __init__(self, base_path='/tmp/bmtl-config', persistent_path='/etc/bmtl-device'):
+    def __init__(self, base_path='/opt/bmtl-device/tmp', persistent_path='/etc/bmtl-device'):
         self.base_path = base_path  # For temporary configs (camera commands)
         self.persistent_path = persistent_path  # For persistent configs (schedules)
         self._cache = {}
         self._last_modified = {}
         self.logger = logging.getLogger('SafeFileConfig')
 
-        # Create directories if they don't exist
-        os.makedirs(self.base_path, exist_ok=True)
-        os.makedirs(self.persistent_path, exist_ok=True)
+        # Create directories if they don't exist; fall back to user temp if needed
+        try:
+            os.makedirs(self.base_path, exist_ok=True)
+        except Exception as e:
+            fallback_base = os.path.join(tempfile.gettempdir(), 'bmtl-config')
+            try:
+                os.makedirs(fallback_base, exist_ok=True)
+                self.logger.warning(
+                    "Base path %s not writeable (%s); falling back to %s",
+                    self.base_path, e, fallback_base,
+                )
+                self.base_path = fallback_base
+            except Exception:
+                # Re-raise original if fallback also fails
+                raise
+
+        try:
+            os.makedirs(self.persistent_path, exist_ok=True)
+        except Exception as e:
+            fallback_etc = os.path.join(tempfile.gettempdir(), 'bmtl-etc')
+            try:
+                os.makedirs(fallback_etc, exist_ok=True)
+                self.logger.warning(
+                    "Persistent path %s not writeable (%s); falling back to %s",
+                    self.persistent_path, e, fallback_etc,
+                )
+                self.persistent_path = fallback_etc
+            except Exception:
+                raise
 
     def _get_file_path(self, filename):
         """Get appropriate file path based on file type"""
@@ -37,7 +63,7 @@ class SafeFileConfig:
         if filename in persistent_files:
             return os.path.join(self.persistent_path, filename)
         else:
-            # Temporary configs (commands, stats) go to /tmp/bmtl-config
+            # Temporary configs (commands, stats) go to base_path
             return os.path.join(self.base_path, filename)
 
     @contextlib.contextmanager

@@ -282,7 +282,8 @@ class BMTLCameraDaemon:
     """BMTL Camera Control Daemon with file-based configuration"""
 
     def __init__(self):
-        self.config_path = "/tmp/bmtl-config"
+        # Use shared runtime config directory from shared_config
+        self.config_path = getattr(config_manager, 'base_path', '/opt/bmtl-device/tmp')
         self.log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
         self.running = True
         self.camera = CameraController()
@@ -452,7 +453,13 @@ class BMTLCameraDaemon:
     def watch_config_files(self):
         """Watch for configuration file changes using inotify"""
         inotify = inotify_simple.INotify()
-        watch_flags = inotify_simple.flags.MODIFY | inotify_simple.flags.MOVED_TO
+        # Expand events to catch atomic writes and file creation reliably
+        watch_flags = (
+            inotify_simple.flags.MODIFY |
+            inotify_simple.flags.MOVED_TO |
+            getattr(inotify_simple.flags, 'CLOSE_WRITE', inotify_simple.flags.MODIFY) |
+            getattr(inotify_simple.flags, 'CREATE', inotify_simple.flags.MOVED_TO)
+        )
 
         # Watch the config directory
         inotify.add_watch(self.config_path, watch_flags)

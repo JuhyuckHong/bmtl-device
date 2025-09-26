@@ -196,8 +196,11 @@ fi
 echo "🔗 Updating current symlink"
 ln -sfn "$TARGET_DIR" "$CURRENT_LINK"
 
-# Create config directory
+# Create config and runtime directories
 sudo mkdir -p /etc/bmtl-device
+sudo mkdir -p /opt/bmtl-device/tmp
+sudo chown "$USER":"$(id -gn)" /opt/bmtl-device/tmp || true
+sudo chmod 0775 /opt/bmtl-device/tmp || true
 
 # Setup configuration file
 echo "⚙️  Setting up configuration..."
@@ -285,7 +288,7 @@ if [[ "$MQTT_STATUS" == "active" && "$CAMERA_STATUS" == "active" ]]; then
     echo ""
     echo "⚙️  Configuration file: /etc/bmtl-device/config.ini"
     echo "⚙️  Environment file: $CURRENT_LINK/.env"
-    echo "📂 Camera config directory: /tmp/bmtl-config"
+    echo "📂 Camera runtime config directory: /opt/bmtl-device/tmp"
 
     # Disable error trap since we succeeded
     trap - ERR
