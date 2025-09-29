@@ -722,6 +722,18 @@ class DeviceWorker:
                 subprocess.run(["ln", "-sfn", previous_path, link_path], check=True)
                 raise RuntimeError("Post-switch venv check failed; reverted to previous version")
 
+            # Install/refresh stable launchers outside the moving 'current' symlink
+            try:
+                launcher_device = os.path.join(inactive_path, "launch-device.sh")
+                launcher_camera = os.path.join(inactive_path, "launch-camera.sh")
+                if os.path.isfile(launcher_device):
+                    subprocess.run(["install", "-m", "0755", launcher_device, "/opt/bmtl-device/launch-device.sh"], check=True)
+                if os.path.isfile(launcher_camera):
+                    subprocess.run(["install", "-m", "0755", launcher_camera, "/opt/bmtl-device/launch-camera.sh"], check=True)
+                self.logger.info("Refreshed stable launcher scripts in /opt/bmtl-device")
+            except Exception as e:
+                self.logger.warning(f"Failed to refresh launcher scripts: {e}")
+
             # 5. Restart the service to apply the update
             self.logger.info("Restarting service to apply update...")
             self._publish(f"bmtl/response/sw-update/{device_id}", {

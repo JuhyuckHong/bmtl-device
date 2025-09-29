@@ -2,9 +2,16 @@
 
 import time
 import sys
+import os
 from multiprocessing import Process, Queue
 import signal
 import logging
+
+# Stabilize module imports even if '/opt/bmtl-device/current' flips during startup
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_RESOLVED_DIR = os.path.realpath(_BASE_DIR)
+if _RESOLVED_DIR not in sys.path:
+    sys.path.insert(0, _RESOLVED_DIR)
 
 from mqtt_daemon import MqttDaemon
 from device_worker import DeviceWorker
