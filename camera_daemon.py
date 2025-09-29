@@ -687,7 +687,9 @@ class BMTLCameraDaemon:
             normalized_state, _ = self._normalize_schedule_state(schedule_plan, now)
             schedule_plan.update(normalized_state)
 
-            config_manager.write_config('camera_schedule.json', schedule_plan)
+            # Persist only core fields to avoid frequent writes due to derived values
+            core = self._core_schedule(schedule_plan)
+            config_manager.write_config('camera_schedule.json', core)
             self.current_schedule = schedule_plan
 
             self.logger.info(
@@ -738,6 +740,23 @@ class BMTLCameraDaemon:
                 return max(interval, 0)
             except (TypeError, ValueError):
                 continue
+
+    def _core_schedule(self, schedule):
+        """Return only the persistent/core schedule fields.
+
+        Excludes derived keys (next_capture, window_start, window_end) to avoid
+        frequent file writes and self-triggered inotify events.
+        """
+        keys = [
+            'enabled',
+            'type',
+            'start_time',
+            'end_time',
+            'capture_interval',
+            'interval_minutes',
+            'last_capture',
+        ]
+        return {k: schedule.get(k) for k in keys if k in schedule}
         return 0
 
     def _calculate_window(self, reference, start_str, end_str):
@@ -893,8 +912,8 @@ class BMTLCameraDaemon:
 
             self.current_schedule = working_schedule
 
-            if schedule_changed:
-                config_manager.write_config('camera_schedule.json', working_schedule)
+            if schedule_changed or self._core_schedule(working_schedule) != self._core_schedule(original_schedule):
+                config_manager.write_config('camera_schedule.json', self._core_schedule(working_schedule))
 
         except Exception as e:
             self.logger.error(f"Error checking schedule: {e}")
@@ -938,7 +957,7 @@ class BMTLCameraDaemon:
             self.upload_mover_thread = threading.Thread(target=self.move_uploaded_files_loop, daemon=True)
             self.upload_mover_thread.start()
 
-            self.logger.info("Camera daemon started")
+        self.logger.info("Camera daemon started")
 
             # Main loop - watch for config changes
             self.watch_config_files()
