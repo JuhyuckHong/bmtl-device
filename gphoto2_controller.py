@@ -46,10 +46,10 @@ class GPhoto2Controller:
                 }
 
             requested_configs = {
-                "resolution": "/main/imgsettings/imagesize",
+                "image_size": "/main/imgsettings/imagesize",
                 "iso": "/main/imgsettings/iso",
                 "aperture": "/main/capturesettings/exposurecompensation",
-                "image_quality": "/main/capturesettings/imagequality",
+                "quality": "/main/capturesettings/imagequality",
                 "focus_mode": "/main/capturesettings/focusmode2",
             }
 
@@ -185,12 +185,8 @@ class GPhoto2Controller:
             setting_map = {
                 'iso': '/main/imgsettings/iso',
                 'aperture': '/main/capturesettings/exposurecompensation',
-                'shutter_speed': '/main/capturesettings/shutterspeed',
-                'shutterspeed': '/main/capturesettings/shutterspeed',
-                'whitebalance': '/main/imgsettings/whitebalance',
-                'image_size': '/main/imgsettings/imagesize',  # Resolution changes require additional handling
+                'image_size': '/main/imgsettings/imagesize',
                 'quality': '/main/capturesettings/imagequality',
-                'image_quality': '/main/capturesettings/imagequality',
                 'focus_mode': '/main/capturesettings/focusmode2',
             }
 
@@ -248,10 +244,10 @@ class GPhoto2Controller:
                 }
 
             requested_configs = {
-                "resolution": "/main/imgsettings/imagesize",
+                "image_size": "/main/imgsettings/imagesize",
                 "iso": "/main/imgsettings/iso",
                 "aperture": "/main/capturesettings/exposurecompensation",
-                "image_quality": "/main/capturesettings/imagequality",
+                "quality": "/main/capturesettings/imagequality",
                 "focus_mode": "/main/capturesettings/focusmode2",
             }
 

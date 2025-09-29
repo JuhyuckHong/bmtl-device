@@ -139,17 +139,11 @@ class CameraController:
             setting_map = {
                 'iso': '/main/imgsettings/iso',
                 'aperture': '/main/capturesettings/exposurecompensation',
-                'shutterspeed': '/main/capturesettings/shutterspeed',
-                'whitebalance': '/main/imgsettings/whitebalance',
-                'imagequality': '/main/capturesettings/imagequality',
-                'focusmode2': '/main/capturesettings/focusmode2',
+                'image_size': '/main/imgsettings/imagesize',
+                'quality': '/main/capturesettings/imagequality',
+                'focus_mode': '/main/capturesettings/focusmode2',
             }
-            alias_map = {
-                'shutter_speed': 'shutterspeed',
-                'image_quality': 'imagequality',
-                'focus_mode': 'focusmode2',
-                'white_balance': 'whitebalance',
-            }
+            alias_map = {}
             applied_config = {}
             for setting, value in (config or {}).items():
                 canonical_key = alias_map.get(setting, setting)
