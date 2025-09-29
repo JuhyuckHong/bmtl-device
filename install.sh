@@ -179,7 +179,7 @@ pip install --upgrade pip
 pip install -r "$TARGET_DIR/requirements.txt"
 
 echo "🧪 Validating bytecode compilation..."
-"$TARGET_DIR/venv/bin/python" -m compileall "$TARGET_DIR"
+"$TARGET_DIR/venv/bin/python" -m compileall -q -x '(^|/)(venv|logs|pip-cache|pip-tmp|__pycache__)(/|$)' "$TARGET_DIR"
 
 deactivate
 

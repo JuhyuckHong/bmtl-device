@@ -715,8 +715,13 @@ class DeviceWorker:
                 subprocess.run([python_path, "-m", "pip", "install", "-r", req_file], check=True, env=pip_env)
             self.logger.info("Dependencies installed in virtual environment.")
 
-            # Basic code integrity check
-            result = subprocess.run([python_path, "-m", "compileall", inactive_path], capture_output=True, text=True)
+            # Basic code integrity check (exclude heavy/volatile dirs like venv, logs)
+            exclude_rx = r"(^|/)(venv|logs|pip-cache|pip-tmp|__pycache__)(/|$)"
+            result = subprocess.run(
+                [python_path, "-m", "compileall", "-q", "-x", exclude_rx, inactive_path],
+                capture_output=True,
+                text=True,
+            )
             if result.returncode != 0:
                 raise RuntimeError(f"Code verification failed (compileall): {result.stderr}")
             self.logger.info("Code verification successful.")
