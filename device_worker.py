@@ -680,10 +680,17 @@ class DeviceWorker:
 
             # 3. Verify new code and install dependencies in a virtual environment
             venv_path = os.path.join(inactive_path, "venv")
-            python_path = os.path.join(venv_path, "bin/python")
-            pip_path = os.path.join(venv_path, "bin/pip")
 
             subprocess.run([sys.executable, "-m", "venv", venv_path], check=True)
+
+            # Discover the venv's python interpreter (python or python3)
+            py_candidates = [
+                os.path.join(venv_path, "bin", "python"),
+                os.path.join(venv_path, "bin", "python3"),
+            ]
+            python_path = next((p for p in py_candidates if os.path.isfile(p) and os.access(p, os.X_OK)), None)
+            if not python_path:
+                raise FileNotFoundError(f"No python interpreter found in venv. Tried: {py_candidates}")
 
             pip_env = os.environ.copy()
             pip_cache_dir = os.path.join(inactive_path, "pip-cache")
@@ -695,7 +702,17 @@ class DeviceWorker:
             pip_env["TMPDIR"] = pip_tmp_dir
             pip_env.setdefault("HOME", inactive_path)
 
-            subprocess.run([pip_path, "install", "--no-cache-dir", "-r", os.path.join(inactive_path, "requirements.txt")], check=True, env=pip_env)
+            # Ensure pip exists inside the venv and upgrade it
+            try:
+                subprocess.run([python_path, "-m", "ensurepip", "--upgrade"], check=False, env=pip_env)
+            except Exception:
+                pass
+            subprocess.run([python_path, "-m", "pip", "install", "--upgrade", "pip"], check=True, env=pip_env)
+
+            # Install dependencies via python -m pip for portability
+            req_file = os.path.join(inactive_path, "requirements.txt")
+            if os.path.exists(req_file):
+                subprocess.run([python_path, "-m", "pip", "install", "-r", req_file], check=True, env=pip_env)
             self.logger.info("Dependencies installed in virtual environment.")
 
             # Basic code integrity check
@@ -714,11 +731,16 @@ class DeviceWorker:
             subprocess.run(["ln", "-sfn", inactive_path, link_path], check=True)
             self.logger.info(f"Switched 'current' link to point to {os.path.basename(inactive_path)}")
 
-            # Post-switch sanity check: verify ExecStart interpreter path exists
-            current_python = os.path.join(link_path, "venv", "bin", "python")
-            if not (os.path.isfile(current_python) and os.access(current_python, os.X_OK)):
+            # Post-switch sanity check: verify interpreter exists (python or python3)
+            curr_candidates = [
+                os.path.join(link_path, "venv", "bin", "python"),
+                os.path.join(link_path, "venv", "bin", "python3"),
+            ]
+            if not any(os.path.isfile(p) and os.access(p, os.X_OK) for p in curr_candidates):
                 # Roll back the link immediately to prevent service crash loops
-                self.logger.error(f"Post-switch check failed: {current_python} not present/executable. Reverting link.")
+                self.logger.error(
+                    f"Post-switch check failed: none of {curr_candidates} present/executable. Reverting link."
+                )
                 subprocess.run(["ln", "-sfn", previous_path, link_path], check=True)
                 raise RuntimeError("Post-switch venv check failed; reverted to previous version")
 
