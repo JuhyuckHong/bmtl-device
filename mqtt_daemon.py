@@ -461,7 +461,20 @@ class MqttDaemon:
             self.client.loop_start()
 
             last_health_update = 0
-            health_interval = 60  # Request device health once per minute
+            # Health check interval (seconds): prefer config, allow env override, fallback to 60
+            try:
+                cfg_health = self.config.getint('intervals', 'health', fallback=60)
+            except Exception:
+                cfg_health = 60
+            env_health = os.getenv('HEALTH_INTERVAL')
+            try:
+                env_health_val = int(env_health) if env_health is not None else None
+            except ValueError:
+                env_health_val = None
+            health_interval = env_health_val if env_health_val is not None else cfg_health
+            if health_interval <= 0:
+                self.logger.warning("Configured health interval <= 0; defaulting to 60s")
+                health_interval = 60
 
             while self.running:
                 # Check connection and attempt reconnection if needed

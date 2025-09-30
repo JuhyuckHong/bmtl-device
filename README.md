@@ -106,6 +106,24 @@ sudo systemctl restart bmtl-device
 - MQTT 토픽명
 - 하트비트 및 상태 전송 간격
 
+### 하트비트/상태 전송 간격 설정
+`mqtt_daemon.py`는 헬스체크(상태 요청) 주기를 설정 파일에서 읽습니다.
+
+```ini
+[intervals]
+# 단위: 초
+health = 300
+```
+
+- 설정이 누락되거나 0 이하로 설정되면 60초로 동작합니다.
+- 운영 환경에서 일시적으로 조정이 필요하면 환경변수 `HEALTH_INTERVAL`(초)로 오버라이드할 수 있습니다. 환경변수가 존재하면 설정 파일값보다 우선합니다.
+
+설정 반영 후 서비스 재시작:
+
+```bash
+sudo systemctl restart bmtl-device
+```
+
 ## 파일 구조
 
 - `mqtt_daemon.py` - 메인 데몬 프로그램
