@@ -875,7 +875,16 @@ fi
         except Exception as e:
             self.logger.error(f"Failed to schedule delayed restart: {e}")
             # Fallback to immediate restart if delayed restart fails
-            subprocess.run(["sudo", "systemctl", "restart", "bmtl-device.service"], check=True)
+            # Ensure both services come back up, device first then camera.
+            try:
+                self.logger.info("Falling back to direct service restart: stopping camera -> restarting device -> starting camera")
+                subprocess.run(["sudo", "systemctl", "stop", "bmtl-camera.service"], check=False)
+                subprocess.run(["sudo", "systemctl", "restart", "bmtl-device.service"], check=True)
+                # Small delay to allow device service to initialize before starting camera
+                time.sleep(3)
+                subprocess.run(["sudo", "systemctl", "start", "bmtl-camera.service"], check=False)
+            except Exception as e2:
+                self.logger.error(f"Direct service restart fallback failed: {e2}")
 
     def _test_new_environment(self, inactive_path):
         """Test if new environment can actually run the application"""

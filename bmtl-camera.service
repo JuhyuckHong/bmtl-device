@@ -2,6 +2,7 @@
 Description=BMTL Camera Control Daemon
 After=network-online.target bmtl-device.service
 Wants=network-online.target
+PartOf=bmtl-device.service
 ConditionPathExists=/opt/bmtl-device/current/venv/bin/python
 
 [Service]
