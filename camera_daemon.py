@@ -900,6 +900,8 @@ class BMTLCameraDaemon:
             normalized_state, capture_due = self._normalize_schedule_state(working_schedule, now)
             working_schedule.update(normalized_state)
 
+            # Detect only persistent/core changes; derived keys (next_capture, window_*)
+            # change frequently and should not trigger file writes.
             schedule_changed = working_schedule != original_schedule
 
             if capture_due:
@@ -912,8 +914,16 @@ class BMTLCameraDaemon:
 
             self.current_schedule = working_schedule
 
-            if schedule_changed or self._core_schedule(working_schedule) != self._core_schedule(original_schedule):
-                config_manager.write_config('camera_schedule.json', self._core_schedule(working_schedule))
+            core_changed = (
+                self._core_schedule(working_schedule)
+                != self._core_schedule(original_schedule)
+            )
+
+            # Only persist when core fields change (e.g., last_capture or user settings)
+            if core_changed:
+                config_manager.write_config(
+                    'camera_schedule.json', self._core_schedule(working_schedule)
+                )
 
         except Exception as e:
             self.logger.error(f"Error checking schedule: {e}")
