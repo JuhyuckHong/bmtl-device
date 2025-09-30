@@ -957,7 +957,7 @@ class BMTLCameraDaemon:
             self.upload_mover_thread = threading.Thread(target=self.move_uploaded_files_loop, daemon=True)
             self.upload_mover_thread.start()
 
-        self.logger.info("Camera daemon started")
+            self.logger.info("Camera daemon started")
 
             # Main loop - watch for config changes
             self.watch_config_files()
