@@ -6,9 +6,31 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 
+# Module-level constants for consistency
+GET_CONFIG_TIMEOUT_S = 10
+SET_CONFIG_TIMEOUT_S = 30
+
+# Standardized key mapping for gphoto2 config paths used by this project.
+# Note: In this project, 'aperture' refers to exposure compensation.
+GPHOTO_CONFIG_MAP: Dict[str, str] = {
+    "resolution": "/main/imgsettings/imagesize",
+    "iso": "/main/imgsettings/iso",
+    "aperture": "/main/capturesettings/exposurecompensation",
+    "image_quality": "/main/capturesettings/imagequality",
+    "focus_mode": "/main/capturesettings/focusmode2",
+}
+
 
 class GPhoto2Controller:
-    """gphoto2 camera controller with configuration helpers."""
+    """gphoto2 camera controller with configuration helpers.
+
+    Key conventions:
+    - resolution: maps to gphoto2 '/main/imgsettings/imagesize'
+    - image_quality: maps to '/main/capturesettings/imagequality'
+    - aperture: project-defined mapping to exposure compensation
+      ('/main/capturesettings/exposurecompensation')
+    - iso, focus_mode: standard paths per camera profile
+    """
 
     def __init__(self) -> None:
         self.logger = logging.getLogger('GPhoto2Controller')
@@ -22,7 +44,7 @@ class GPhoto2Controller:
                 ['gphoto2', '--auto-detect'],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=GET_CONFIG_TIMEOUT_S,
             )
             self.camera_connected = result.returncode == 0 and 'usb:' in result.stdout
             if self.camera_connected:
@@ -36,7 +58,7 @@ class GPhoto2Controller:
             return False
 
     def get_camera_options(self) -> Dict[str, Any]:
-        """Return option metadata for the requested gphoto2 configuration paths."""
+        """Return option metadata for standardized gphoto2 configuration keys."""
         try:
             if not self.check_camera_connection():
                 return {
@@ -45,19 +67,21 @@ class GPhoto2Controller:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
 
-            requested_configs = {
-                "image_size": "/main/imgsettings/imagesize",
-                "iso": "/main/imgsettings/iso",
-                "aperture": "/main/capturesettings/exposurecompensation",
-                "quality": "/main/capturesettings/imagequality",
-                "focus_mode": "/main/capturesettings/focusmode2",
-            }
+            # Use standardized keys shared with DeviceWorker/UI
+            requested_keys = [
+                "resolution",
+                "iso",
+                "aperture",
+                "image_quality",
+                "focus_mode",
+            ]
 
             options: Dict[str, Any] = {}
             errors = []
             success_flags: List[bool] = []
 
-            for key, config_path in requested_configs.items():
+            for key in requested_keys:
+                config_path = GPHOTO_CONFIG_MAP[key]
                 details = self._get_config_details(config_path)
                 options[key] = {
                     "label": details.get("label"),
@@ -108,7 +132,7 @@ class GPhoto2Controller:
                 ['gphoto2', '--get-config', config_path],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=GET_CONFIG_TIMEOUT_S,
             )
 
             if result.returncode != 0:
@@ -170,7 +194,12 @@ class GPhoto2Controller:
             }
 
     def apply_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply camera settings using gphoto2."""
+        """Apply camera settings using gphoto2 for supported keys.
+
+        Notes:
+        - 'resolution' (image size) changes are not applied here to avoid
+          device-specific pitfalls. Manage via persistent image settings if needed.
+        """
         try:
             if not self.check_camera_connection():
                 return {
@@ -182,27 +211,27 @@ class GPhoto2Controller:
             applied_settings = {}
             errors = []
 
-            setting_map = {
-                'iso': '/main/imgsettings/iso',
-                'aperture': '/main/capturesettings/exposurecompensation',
-                'image_size': '/main/imgsettings/imagesize',
-                'quality': '/main/capturesettings/imagequality',
-                'focus_mode': '/main/capturesettings/focusmode2',
-            }
+            # Reuse standardized mapping
+            setting_map = GPHOTO_CONFIG_MAP
 
             for key, value in settings.items():
                 if key in setting_map:
                     gphoto_key = setting_map[key]
                     try:
-                        if key == 'image_size':
-                            self.logger.info("Image size setting requested: %s", value)
+                        if key == 'resolution':
+                            msg = (
+                                f"Resolution change requested ({value}) not applied via apply_settings; "
+                                f"manage via image settings"
+                            )
+                            errors.append(msg)
+                            self.logger.info(msg)
                             continue
 
                         result = subprocess.run(
                             ['gphoto2', '--set-config', f'{gphoto_key}={value}'],
                             capture_output=True,
                             text=True,
-                            timeout=30,
+                            timeout=SET_CONFIG_TIMEOUT_S,
                         )
 
                         if result.returncode == 0:
@@ -243,21 +272,21 @@ class GPhoto2Controller:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
 
-            requested_configs = {
-                "image_size": "/main/imgsettings/imagesize",
-                "iso": "/main/imgsettings/iso",
-                "aperture": "/main/capturesettings/exposurecompensation",
-                "quality": "/main/capturesettings/imagequality",
-                "focus_mode": "/main/capturesettings/focusmode2",
-            }
+            requested_keys = [
+                "resolution",
+                "iso",
+                "aperture",
+                "image_quality",
+                "focus_mode",
+            ]
 
             options: Dict[str, Any] = {}
             settings: Dict[str, Any] = {}
             errors: List[Dict[str, str]] = []
             success_flags: List[bool] = []
 
-            for key, config_path in requested_configs.items():
-                details = self._get_config_details(config_path)
+            for key in requested_keys:
+                details = self._get_config_details(GPHOTO_CONFIG_MAP[key])
                 option_payload = {
                     "label": details.get("label"),
                     "type": details.get("type"),
@@ -319,6 +348,7 @@ class GPhoto2Controller:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as exc:  # pragma: no cover - defensive guard
+            self.logger.error("Error reporting camera power state: %s", exc)
             return {
                 "success": False,
                 "error": str(exc),
@@ -328,13 +358,13 @@ class GPhoto2Controller:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-
     controller = GPhoto2Controller()
+    demo_logger = logging.getLogger('GPhoto2ControllerDemo')
 
-    print("=== Camera Options ===")
+    demo_logger.info("=== Camera Options ===")
     options = controller.get_camera_options()
-    print(json.dumps(options, indent=2))
+    demo_logger.info(json.dumps(options, indent=2))
 
-    print("\n=== Current Settings ===")
+    demo_logger.info("=== Current Settings ===")
     settings = controller.get_current_settings()
-    print(json.dumps(settings, indent=2))
+    demo_logger.info(json.dumps(settings, indent=2))
