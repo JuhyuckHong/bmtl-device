@@ -56,11 +56,16 @@ After every code generation, perform the following checks:
     - Verify all quotes (' , " , """ ) are properly closed.
 
 2. **Clean Code Principles**
+
     - Follow existing project patterns and folder structures.
     - Apply the **One Source of Truth** rule (no duplicated definitions).
     - Replace magic numbers/strings with constants.
     - Implement proper error and exception handling.
     - Respect the **Single Responsibility Principle** (one function = one purpose).
     - Place reusable code in shared modules.
+
+3. **Review Mindset**
+    - Conduct the review from a zero-base perspective, not assuming correctness.
+    - Do not hide or omit suggested fixes — always propose necessary improvements clearly.
 
 After review, always **output a checklist result**.
