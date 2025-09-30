@@ -1,7 +1,8 @@
 [Unit]
 Description=BMTL Camera Control Daemon
-After=network.target
-Wants=network.target
+After=network-online.target bmtl-device.service
+Wants=network-online.target
+ConditionPathExists=/opt/bmtl-device/current/venv/bin/python
 
 [Service]
 Type=simple
@@ -11,7 +12,10 @@ WorkingDirectory=/opt/bmtl-device/current
 Environment=PYTHONPATH=/opt/bmtl-device/current
 ExecStart=/opt/bmtl-device/launch-camera.sh
 Restart=always
-RestartSec=5
+RestartSec=15
+StartLimitBurst=10
+StartLimitIntervalSec=300
+TimeoutStartSec=60
 StandardOutput=journal
 StandardError=journal
 

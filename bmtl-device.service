@@ -1,7 +1,8 @@
 [Unit]
 Description=BMTL Device MQTT Client Daemon
-After=network.target
-Wants=network.target
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/bmtl-device/current/venv/bin/python
 
 [Service]
 Type=simple
@@ -13,7 +14,10 @@ Environment=PYTHONPATH=/opt/bmtl-device/current
 Environment=PATH=/opt/bmtl-device/current/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/opt/bmtl-device/launch-device.sh
 Restart=always
-RestartSec=10
+RestartSec=15
+StartLimitBurst=10
+StartLimitIntervalSec=300
+TimeoutStartSec=60
 StandardOutput=journal
 StandardError=journal
 
