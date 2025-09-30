@@ -813,6 +813,12 @@ class DeviceWorker:
     def _schedule_delayed_restart(self, device_id):
         """Schedule restart after current process exits to avoid deadlock"""
         try:
+            # Proactively terminate camera daemon without requiring sudo/systemctl.
+            # Systemd has Restart=always, so it will bring the camera back automatically.
+            try:
+                self._terminate_camera_processes(timeout=10)
+            except Exception as kill_exc:
+                self.logger.warning(f"Failed to pre-terminate camera processes: {kill_exc}")
             # Create update completion marker
             os.makedirs("/opt/bmtl-device/tmp", exist_ok=True)
             completion_file = "/opt/bmtl-device/tmp/update_complete"
@@ -824,38 +830,19 @@ class DeviceWorker:
             script_content = f"""#!/bin/bash
 set -e
 
-echo "Starting delayed restart process..."
+echo "Starting delayed restart cleanup..."
 sleep 5
 
 # Verify update completion
 if [ ! -f "{completion_file}" ]; then
-    echo "Update completion marker not found, aborting restart"
-    exit 1
+    echo "Update completion marker not found, nothing to clean"
+    exit 0
 fi
 
-# Stop services gracefully
-echo "Stopping services..."
-sudo systemctl stop bmtl-camera.service || true
-sleep 2
-sudo systemctl stop bmtl-device.service || true
-sleep 3
-
-# Restart services
-echo "Restarting services..."
-sudo systemctl start bmtl-device.service
-sleep 5
-sudo systemctl start bmtl-camera.service
-
-# Verify services are running
-sleep 3
-if systemctl is-active --quiet bmtl-device.service && systemctl is-active --quiet bmtl-camera.service; then
-    echo "Services restarted successfully"
-    rm -f {restart_script}
-    rm -f {completion_file}
-else
-    echo "Service restart failed"
-    exit 1
-fi
+# Cleanup marker and self; service restarts are handled by systemd due to child exit
+rm -f {restart_script} || true
+rm -f {completion_file} || true
+echo "Cleanup finished"
 """
             with open(restart_script, 'w') as f:
                 f.write(script_content)
@@ -874,17 +861,69 @@ fi
 
         except Exception as e:
             self.logger.error(f"Failed to schedule delayed restart: {e}")
-            # Fallback to immediate restart if delayed restart fails
-            # Ensure both services come back up, device first then camera.
+            # Fallback: gracefully terminate camera and request device restart without sudo.
             try:
-                self.logger.info("Falling back to direct service restart: stopping camera -> restarting device -> starting camera")
-                subprocess.run(["sudo", "systemctl", "stop", "bmtl-camera.service"], check=False)
-                subprocess.run(["sudo", "systemctl", "restart", "bmtl-device.service"], check=True)
-                # Small delay to allow device service to initialize before starting camera
-                time.sleep(3)
-                subprocess.run(["sudo", "systemctl", "start", "bmtl-camera.service"], check=False)
+                self._terminate_camera_processes(timeout=10)
             except Exception as e2:
-                self.logger.error(f"Direct service restart fallback failed: {e2}")
+                self.logger.warning(f"Camera termination fallback failed: {e2}")
+            try:
+                subprocess.run(["systemctl", "restart", "bmtl-device.service"], check=False)
+            except Exception as e3:
+                self.logger.warning(f"systemctl restart without sudo failed: {e3}")
+
+    def _terminate_camera_processes(self, timeout=10):
+        """Terminate running camera daemon processes (best-effort, no root required)."""
+        try:
+            out = subprocess.check_output(["ps", "-eo", "pid,args"], text=True)
+        except Exception as exc:
+            raise RuntimeError(f"ps listing failed: {exc}")
+
+        targets = []
+        for line in out.splitlines()[1:]:
+            parts = line.strip().split(None, 1)
+            if not parts:
+                continue
+            try:
+                pid = int(parts[0])
+            except Exception:
+                continue
+            args = parts[1] if len(parts) > 1 else ""
+            if ("camera_daemon.py" in args) or ("/opt/bmtl-device/launch-camera.sh" in args):
+                targets.append(pid)
+
+        if not targets:
+            self.logger.info("No camera processes found to terminate.")
+            return
+
+        self.logger.info(f"Terminating camera processes: {targets}")
+        for pid in targets:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except Exception as exc:
+                self.logger.warning(f"Failed to SIGTERM pid {pid}: {exc}")
+
+        # Wait up to timeout seconds
+        t0 = time.time()
+        remaining = set(targets)
+        while remaining and (time.time() - t0) < timeout:
+            for pid in list(remaining):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    remaining.discard(pid)
+                except Exception:
+                    remaining.discard(pid)
+            time.sleep(0.2)
+
+        if remaining:
+            self.logger.warning(f"Camera processes still running, sending SIGKILL: {sorted(remaining)}")
+            for pid in list(remaining):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
 
     def _test_new_environment(self, inactive_path):
         """Test if new environment can actually run the application"""
