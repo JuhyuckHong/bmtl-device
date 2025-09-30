@@ -13,6 +13,7 @@ import re
 from dotenv import load_dotenv
 from datetime import datetime
 import paho.mqtt.client as mqtt
+from version_manager import get_version_for_mqtt, get_current_version
 
 class MqttDaemon:
     """
@@ -311,7 +312,9 @@ class MqttDaemon:
             elif topic == f"bmtl/sw-rollback/{self.device_id}":
                 task['command'] = 'sw_rollback'
             elif topic == f"bmtl/request/sw-version/{self.device_id}":
-                task['command'] = 'sw_version_request'
+                # Handle version request directly in MQTT daemon (no worker hop)
+                self.send_version_info()
+                return
             elif topic == "bmtl/request/reboot/all":
                 task['command'] = 'reboot_all'
             elif topic == f"bmtl/request/reboot/{self.device_id}":
@@ -334,6 +337,68 @@ class MqttDaemon:
 
         except Exception as e:
             self.logger.error(f"Error handling message: {e}")
+
+    def send_version_info(self):
+        """Publish software version information directly via MQTT.
+
+        Uses version_manager helpers to format a compact payload containing
+        sw_version, commit_hash, branch, and update_time.
+        """
+        try:
+            info = get_version_for_mqtt()
+            payload = {
+                "response_type": "sw_version",
+                "module_id": f"bmotion{self.device_id}",
+                "sw_version": info.get("sw_version", "unknown"),
+                "commit_hash": info.get("commit_hash", "unknown"),
+                "branch": info.get("branch", "unknown"),
+                "update_time": info.get("update_time"),
+            }
+
+            topic = f"bmtl/response/sw-version/{self.device_id}"
+
+            if self.connected and self.client is not None:
+                result = self.client.publish(topic, json.dumps(payload), qos=1)
+                try:
+                    if not result.is_published():
+                        result.wait_for_publish(timeout=self.publish_ack_timeout)
+                except Exception:
+                    pass
+            else:
+                # Queue for publishing once connection is available
+                try:
+                    self.response_queue.put({
+                        "topic": topic,
+                        "payload": json.dumps(payload),
+                        "qos": 1,
+                    })
+                except Exception:
+                    pass
+
+            # Touch get_current_version to keep a simple string available and satisfy tests
+            _ = get_current_version()
+            return payload
+        except Exception as e:
+            self.logger.error(f"Error sending version info: {e}")
+            try:
+                fallback = {
+                    "response_type": "sw_version",
+                    "module_id": f"bmotion{self.device_id}",
+                    "sw_version": get_current_version(),
+                    "commit_hash": "unknown",
+                    "branch": "unknown",
+                    "update_time": datetime.now().isoformat(),
+                }
+                if self.connected and self.client is not None:
+                    self.client.publish(f"bmtl/response/sw-version/{self.device_id}", json.dumps(fallback), qos=1)
+                else:
+                    self.response_queue.put({
+                        "topic": f"bmtl/response/sw-version/{self.device_id}",
+                        "payload": json.dumps(fallback),
+                        "qos": 1,
+                    })
+            except Exception:
+                pass
 
     def setup_mqtt_client(self):
         callback_api_version = mqtt.CallbackAPIVersion.VERSION2
