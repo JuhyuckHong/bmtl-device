@@ -7,6 +7,22 @@ set -euo pipefail
 BASE_DIR="/opt/bmtl-device"
 CUR_LINK="$BASE_DIR/current"
 
+# Check for ongoing update and wait
+UPDATE_LOCK="$BASE_DIR/tmp/update.lock"
+if [ -f "$UPDATE_LOCK" ]; then
+  echo "Update in progress, waiting..." >&2
+  # Wait up to 60 seconds for update to complete
+  for i in {1..60}; do
+    if [ ! -f "$UPDATE_LOCK" ]; then
+      break
+    fi
+    sleep 1
+  done
+  if [ -f "$UPDATE_LOCK" ]; then
+    echo "Update still in progress after 60 seconds, proceeding anyway..." >&2
+  fi
+fi
+
 resolve_python() {
   local cur_target
   cur_target=$(readlink -f "$CUR_LINK" || true)
