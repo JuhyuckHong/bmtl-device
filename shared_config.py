@@ -121,6 +121,26 @@ class SafeFileConfig:
 
         try:
             with self._file_lock(filepath):
+                # If an existing file has identical data, skip the write to avoid
+                # unnecessary inotify events and log noise.
+                try:
+                    if os.path.exists(filepath):
+                        with open(filepath, 'r') as f:
+                            existing_payload = json.load(f)
+                        if isinstance(existing_payload, dict) and 'data' in existing_payload:
+                            existing_data = existing_payload['data']
+                        else:
+                            existing_data = existing_payload
+                        if existing_data == data:
+                            # Update cache but do not touch the file on disk
+                            self._cache[filename] = data
+                            # Do not bump _last_modified to preserve file mtime semantics
+                            self.logger.debug(f"Config unchanged; skipping write: {filename}")
+                            return
+                except Exception:
+                    # Any read/parse error will fall through to a normal write
+                    pass
+
                 # Add metadata
                 config_data = {
                     'timestamp': datetime.now().isoformat(),

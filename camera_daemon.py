@@ -327,6 +327,9 @@ class BMTLCameraDaemon:
         # Debounce settings for noisy file change events
         self._event_debounce = {}
         self._debounce_sec = 0.5
+        # Track recent self-writes to suppress self-induced inotify events
+        self._self_write_suppress = {}
+        self._self_write_window_sec = 2.0
 
         self.setup_logging()
 
@@ -544,8 +547,14 @@ class BMTLCameraDaemon:
                         self.logger.debug(f"Ignoring change outside allowlist: {abs_path}")
                         continue
 
-                    # Debounce rapidly repeated events
+                    # Suppress self-induced events shortly after our own writes
                     now = time.time()
+                    last_self_write = self._self_write_suppress.get(filename)
+                    if last_self_write and (now - last_self_write) < self._self_write_window_sec:
+                        self.logger.debug(f"Ignored self-induced change: {filename}")
+                        continue
+
+                    # Debounce rapidly repeated events
                     last = self._event_debounce.get(abs_path, 0)
                     if (now - last) < self._debounce_sec:
                         self.logger.debug(f"Debounced duplicate event: {abs_path}")
@@ -690,6 +699,11 @@ class BMTLCameraDaemon:
             # Persist only core fields to avoid frequent writes due to derived values
             core = self._core_schedule(schedule_plan)
             config_manager.write_config('camera_schedule.json', core)
+            # Mark recent self-write for suppression window
+            try:
+                self._self_write_suppress['camera_schedule.json'] = time.time()
+            except Exception:
+                pass
             self.current_schedule = schedule_plan
 
             self.logger.info(
@@ -924,6 +938,11 @@ class BMTLCameraDaemon:
                 config_manager.write_config(
                     'camera_schedule.json', self._core_schedule(working_schedule)
                 )
+                # Mark recent self-write for suppression window
+                try:
+                    self._self_write_suppress['camera_schedule.json'] = time.time()
+                except Exception:
+                    pass
 
         except Exception as e:
             self.logger.error(f"Error checking schedule: {e}")
