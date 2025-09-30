@@ -649,7 +649,14 @@ class DeviceWorker:
         base_dir = "/opt/bmtl-device"
         link_path = os.path.join(base_dir, "current")
 
+        # Create update lock file
+        os.makedirs("/opt/bmtl-device/tmp", exist_ok=True)
+        lock_file = "/opt/bmtl-device/tmp/update.lock"
+
         try:
+            # Create lock file
+            with open(lock_file, 'w') as f:
+                f.write(f"{os.getpid()}\n{datetime.now().isoformat()}\n")
             # 1. Determine active and inactive directories
             if not os.path.islink(link_path):
                 raise FileNotFoundError("Symbolic link 'current' not found. Please run initial setup.")
@@ -670,7 +677,8 @@ class DeviceWorker:
             git_repo_url = self.git_repo_url
 
             if os.path.exists(inactive_path):
-                subprocess.run(f"rm -rf {inactive_path}", shell=True, check=True)
+                import shutil
+                shutil.rmtree(inactive_path, ignore_errors=True)
 
             subprocess.run(
                 ["git", "clone", "--depth=1", git_repo_url, inactive_path],
@@ -726,6 +734,10 @@ class DeviceWorker:
                 raise RuntimeError(f"Code verification failed (compileall): {result.stderr}")
             self.logger.info("Code verification successful.")
 
+            # 3.5. Test the new environment with actual imports
+            if not self._test_new_environment(inactive_path):
+                raise RuntimeError("New environment failed import tests")
+
             # 4. Switch over: update the symbolic link
             # Safety: ensure new venv Python exists before switching
             if not (os.path.isfile(python_path) and os.access(python_path, os.X_OK)):
@@ -761,15 +773,15 @@ class DeviceWorker:
             except Exception as e:
                 self.logger.warning(f"Failed to refresh launcher scripts: {e}")
 
-            # 5. Restart the service to apply the update
-            self.logger.info("Restarting service to apply update...")
+            # 5. Schedule delayed restart to avoid deadlock
+            self.logger.info("Update completed. Scheduling delayed restart...")
             self._publish(f"bmtl/response/sw-update/{device_id}", {
                 "response_type": "sw_update_result", "module_id": f"bmotion{device_id}",
-                "success": True, "message": "Update successful. Restarting service.",
+                "success": True, "message": "Update successful. Scheduling restart.",
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
-            time.sleep(1) # Allow time for the message to be sent
-            subprocess.run(["sudo", "systemctl", "restart", "bmtl-device.service"], check=True)
+            time.sleep(3)  # Allow time for the message to be sent
+            self._schedule_delayed_restart(device_id)
 
         except (FileNotFoundError, ValueError, subprocess.CalledProcessError, RuntimeError) as e:
             self.logger.error(f"Robust update failed: {e}")
@@ -779,7 +791,8 @@ class DeviceWorker:
 
             # Clean up the failed update directory
             if 'inactive_path' in locals() and os.path.exists(inactive_path):
-                subprocess.run(f"rm -rf {inactive_path}", shell=True)
+                import shutil
+                shutil.rmtree(inactive_path, ignore_errors=True)
                 self.logger.info(f"Cleaned up failed update directory: {inactive_path}")
 
             self._publish(f"bmtl/response/sw-update/{device_id}", {
@@ -788,9 +801,172 @@ class DeviceWorker:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
 
+        finally:
+            # Always clean up lock file
+            try:
+                if 'lock_file' in locals() and os.path.exists(lock_file):
+                    os.remove(lock_file)
+                    self.logger.info("Update lock file removed")
+            except Exception as e:
+                self.logger.warning(f"Failed to remove lock file: {e}")
+
+    def _schedule_delayed_restart(self, device_id):
+        """Schedule restart after current process exits to avoid deadlock"""
+        try:
+            # Create update completion marker
+            os.makedirs("/opt/bmtl-device/tmp", exist_ok=True)
+            completion_file = "/opt/bmtl-device/tmp/update_complete"
+            with open(completion_file, 'w') as f:
+                f.write(datetime.now(timezone.utc).isoformat())
+
+            # Create delayed restart script
+            restart_script = "/tmp/bmtl_delayed_restart.sh"
+            script_content = f"""#!/bin/bash
+set -e
+
+echo "Starting delayed restart process..."
+sleep 5
+
+# Verify update completion
+if [ ! -f "{completion_file}" ]; then
+    echo "Update completion marker not found, aborting restart"
+    exit 1
+fi
+
+# Stop services gracefully
+echo "Stopping services..."
+sudo systemctl stop bmtl-camera.service || true
+sleep 2
+sudo systemctl stop bmtl-device.service || true
+sleep 3
+
+# Restart services
+echo "Restarting services..."
+sudo systemctl start bmtl-device.service
+sleep 5
+sudo systemctl start bmtl-camera.service
+
+# Verify services are running
+sleep 3
+if systemctl is-active --quiet bmtl-device.service && systemctl is-active --quiet bmtl-camera.service; then
+    echo "Services restarted successfully"
+    rm -f {restart_script}
+    rm -f {completion_file}
+else
+    echo "Service restart failed"
+    exit 1
+fi
+"""
+            with open(restart_script, 'w') as f:
+                f.write(script_content)
+            os.chmod(restart_script, 0o755)
+
+            self.logger.info(f"Created delayed restart script: {restart_script}")
+
+            # Start the restart script in background and exit current process
+            subprocess.Popen([restart_script], start_new_session=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            self.logger.info("Scheduled delayed restart. Exiting current process...")
+            # Give time for the message to be logged
+            time.sleep(1)
+            os._exit(0)
+
+        except Exception as e:
+            self.logger.error(f"Failed to schedule delayed restart: {e}")
+            # Fallback to immediate restart if delayed restart fails
+            subprocess.run(["sudo", "systemctl", "restart", "bmtl-device.service"], check=True)
+
+    def _test_new_environment(self, inactive_path):
+        """Test if new environment can actually run the application"""
+        python_path = os.path.join(inactive_path, "venv", "bin", "python")
+
+        # Test basic imports
+        test_script = f"""
+import sys
+sys.path.insert(0, '{inactive_path}')
+try:
+    import paho.mqtt.client
+    import configparser
+    # Test project modules
+    import mqtt_daemon
+    import camera_daemon
+    print('Environment test passed')
+except ImportError as e:
+    print(f'Import test failed: {{e}}')
+    sys.exit(1)
+"""
+
+        try:
+            result = subprocess.run(
+                [python_path, "-c", test_script],
+                capture_output=True, text=True, timeout=30,
+                cwd=inactive_path
+            )
+
+            if result.returncode == 0:
+                self.logger.info("New environment test passed")
+                return True
+            else:
+                self.logger.error(f"Environment test failed: {result.stderr}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Environment test error: {e}")
+            return False
+
     def handle_sw_rollback(self, device_id, payload):
-        # TODO: Additional update logic placeholder
-        pass
+        """Complete rollback implementation"""
+        try:
+            self.logger.info("Processing software rollback request")
+
+            base_dir = "/opt/bmtl-device"
+            link_path = os.path.join(base_dir, "current")
+
+            if not os.path.islink(link_path):
+                raise FileNotFoundError("Current symlink not found")
+
+            current_target = os.path.realpath(link_path)
+            current_slot = os.path.basename(current_target)
+
+            # Determine previous slot
+            previous_slot = "v1" if current_slot == "v2" else "v2"
+            previous_path = os.path.join(base_dir, previous_slot)
+
+            if not os.path.exists(previous_path):
+                raise FileNotFoundError(f"Previous version not found: {previous_slot}")
+
+            # Test previous environment
+            if not self._test_new_environment(previous_path):
+                raise RuntimeError("Previous environment failed validation")
+
+            # Switch symlink
+            subprocess.run(["ln", "-sfn", previous_path, link_path], check=True)
+            self.logger.info(f"Rolled back to {previous_slot}")
+
+            # Send success response
+            self._publish(f"bmtl/response/sw-rollback/{device_id}", {
+                "response_type": "sw_rollback_result",
+                "module_id": f"bmotion{device_id}",
+                "success": True,
+                "message": f"Rollback successful. Switched to {previous_slot}.",
+                "log_file": "/opt/bmtl-device/logs/rollback.log",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+
+            # Schedule restart
+            time.sleep(2)
+            self._schedule_delayed_restart(device_id)
+
+        except Exception as e:
+            self.logger.error(f"Rollback failed: {e}")
+            self._publish(f"bmtl/response/sw-rollback/{device_id}", {
+                "response_type": "sw_rollback_result",
+                "module_id": f"bmotion{device_id}",
+                "success": False,
+                "message": f"Rollback failed: {e}",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
 
     def handle_sw_version_request(self, device_id):
         try:
