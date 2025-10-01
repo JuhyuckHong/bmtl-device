@@ -801,6 +801,13 @@ class DeviceWorker:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
 
+            # Ensure camera daemon is restarted even on update failure
+            try:
+                self.logger.info("Update failed - terminating camera daemon to force systemd restart")
+                self._terminate_camera_processes(timeout=10)
+            except Exception as kill_exc:
+                self.logger.warning(f"Failed to terminate camera after update failure: {kill_exc}")
+
         finally:
             # Always clean up lock file
             try:
