@@ -176,7 +176,11 @@ class CameraController:
             self.logger.error("Error applying camera config: %s", e)
 
     def capture_photo(self, filename=None):
-        """Capture a photo using gphoto2"""
+        """Capture a photo using gphoto2.
+
+        Ensures the downloaded file actually exists and is non-empty.
+        Logs gphoto2 stdout/stderr to aid diagnosis.
+        """
         try:
             if not filename:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -186,24 +190,58 @@ class CameraController:
             filepath = os.path.join(self.upload_path, filename)
 
             # Capture photo
-            cmd = ['gphoto2', '--capture-image-and-download', '--filename', filepath]
+            cmd = [
+                'gphoto2',
+                '--force-overwrite',
+                '--capture-image-and-download',
+                '--filename', filepath,
+            ]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
+            # Verify file presence even if gphoto2 returned 0
+            file_ok = False
+            try:
+                file_ok = os.path.exists(filepath) and os.path.getsize(filepath) > 0
+            except Exception:
+                file_ok = False
+
+            success = (result.returncode == 0) and file_ok
+
             capture_result = {
-                'success': result.returncode == 0,
-                'filename': filename if result.returncode == 0 else None,
-                'filepath': filepath if result.returncode == 0 else None,
+                'success': success,
+                'filename': filename if success else None,
+                'filepath': filepath if success else None,
                 'timestamp': datetime.now().isoformat(),
                 'config': self.current_config.copy()
             }
 
-            if result.returncode == 0:
-                self.logger.info(f"Photo captured successfully to upload folder: {filename}")
+            if success:
+                try:
+                    size = os.path.getsize(filepath)
+                except Exception:
+                    size = -1
+                self.logger.info(
+                    "Photo captured successfully: %s (size=%s bytes)", filename, size
+                )
+                if result.stdout:
+                    self.logger.debug("gphoto2 stdout: %s", result.stdout.strip())
                 # Update capture statistics
                 self.update_capture_stats(True)
             else:
-                self.logger.error(f"Photo capture failed: {result.stderr}")
-                capture_result['error'] = result.stderr
+                # Build detailed error message
+                err_msg = result.stderr.strip() if result.stderr else ''
+                out_msg = result.stdout.strip() if result.stdout else ''
+                if result.returncode != 0:
+                    self.logger.error(
+                        "Photo capture failed (rc=%s): stderr='%s' stdout='%s'",
+                        result.returncode, err_msg, out_msg,
+                    )
+                else:
+                    self.logger.error(
+                        "Photo capture reported success but file missing: %s | stdout='%s'",
+                        filepath, out_msg,
+                    )
+                capture_result['error'] = err_msg or 'File missing after capture'
                 # Update missed capture count
                 self.update_capture_stats(False)
 
