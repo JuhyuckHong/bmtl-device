@@ -67,6 +67,7 @@ DEFAULT_CAMERA_SCHEDULE = {
     'end_time': '23:59',
     'capture_interval': 60,
     'interval_minutes': 60,
+    'last_planned': None,
     'last_capture': None,
     'next_capture': None,
     'window_start': None,
@@ -117,6 +118,37 @@ class CameraController:
 
         # Check if camera is connected
         self.check_camera_connection()
+
+    def _resolve_extension(self):
+        """Resolve preferred file extension based on current settings.
+
+        Falls back to 'jpg' if no explicit format is configured.
+        """
+        try:
+            # Prefer camera_settings.json if present
+            camera_settings = config_manager.read_config('camera_settings.json') or {}
+            image_settings = config_manager.read_config('image_settings.json') or {}
+            fmt = camera_settings.get('format') or image_settings.get('format') or ''
+            fmt_str = str(fmt).lower()
+            if 'raw' in fmt_str:
+                return 'raw'
+            if 'jpeg' in fmt_str or 'jpg' in fmt_str:
+                return 'jpg'
+        except Exception:
+            pass
+        return 'jpg'
+
+    def build_slot_filename(self, planned_dt):
+        """Return wall-clock grid filename for a planned capture time.
+
+        Format: YYYY-MM-DD_HH-MM-SS.%C where %C is the file extension.
+        """
+        try:
+            ts = planned_dt.strftime('%Y-%m-%d_%H-%M-%S')
+        except Exception:
+            ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        ext = self._resolve_extension()
+        return f"{ts}.{ext}"
 
     def check_camera_connection(self):
         """Check if camera is connected via gphoto2"""
@@ -695,12 +727,19 @@ class BMTLCameraDaemon:
 
             existing_schedule = read_camera_schedule() or {}
             last_capture = existing_schedule.get('last_capture')
+            last_planned = existing_schedule.get('last_planned')
             if last_capture:
                 try:
                     datetime.fromisoformat(last_capture)
                 except ValueError:
                     self.logger.warning(f"Invalid last_capture timestamp '{last_capture}', resetting to None")
                     last_capture = None
+            if last_planned:
+                try:
+                    datetime.fromisoformat(last_planned)
+                except ValueError:
+                    self.logger.warning(f"Invalid last_planned timestamp '{last_planned}', resetting to None")
+                    last_planned = None
 
             start_fallback = self._normalize_time_field(existing_schedule.get('start_time'), '00:00')
             end_fallback = self._normalize_time_field(existing_schedule.get('end_time'), '23:59')
@@ -728,6 +767,7 @@ class BMTLCameraDaemon:
                 'end_time': end_time,
                 'capture_interval': interval,
                 'interval_minutes': interval,
+                'last_planned': last_planned,
                 'last_capture': last_capture,
             }
 
@@ -806,6 +846,7 @@ class BMTLCameraDaemon:
             'end_time',
             'capture_interval',
             'interval_minutes',
+            'last_planned',
             'last_capture',
         ]
         return {k: schedule.get(k) for k in keys if k in schedule}
@@ -848,6 +889,17 @@ class BMTLCameraDaemon:
         intervals = math.ceil(delta_seconds / interval_td.total_seconds())
         return base + (interval_td * intervals)
 
+    def _floor_to_interval(self, base, reference, interval_td):
+        """Return the capture time <= reference aligned to the interval."""
+        if interval_td.total_seconds() <= 0:
+            return base
+        if reference <= base:
+            return base
+
+        delta_seconds = (reference - base).total_seconds()
+        intervals = math.floor(delta_seconds / interval_td.total_seconds())
+        return base + (interval_td * intervals)
+
     def _advance_window(self, start_dt, end_dt):
         """Advance window bounds by one day preserving duration."""
         window_length = end_dt - start_dt
@@ -858,7 +910,17 @@ class BMTLCameraDaemon:
         return next_start, next_end
 
     def _normalize_schedule_state(self, schedule, now):
-        """Return normalized schedule fields and whether a capture is due."""
+        """Return normalized schedule fields and whether a capture is due.
+
+        Grid-locked policy (Option A):
+        - Maintain a wall-clock grid based on window_start and interval.
+        - Use 'last_planned' (planned slot time) rather than 'last_capture'
+          to compute the next planned slot. This keeps the cadence locked to
+          the grid regardless of capture delays.
+        - Treat a slot as due when now >= planned slot time.
+        - Do not auto-skip here; higher-level logic may fast-forward when
+          multiple slots were missed.
+        """
         normalized = {}
 
         start_time = self._normalize_time_field(schedule.get('start_time'), '00:00')
@@ -893,27 +955,36 @@ class BMTLCameraDaemon:
 
         interval_td = timedelta(minutes=interval)
 
-        last_capture_str = schedule.get('last_capture')
-        last_capture_dt = None
-        if last_capture_str:
+        # Parse last_planned for grid-locked cadence
+        last_planned_str = schedule.get('last_planned')
+        last_planned_dt = None
+        if last_planned_str:
             try:
-                last_capture_dt = datetime.fromisoformat(last_capture_str)
+                last_planned_dt = datetime.fromisoformat(last_planned_str)
             except ValueError:
-                self.logger.warning(f"Invalid last_capture timestamp '{last_capture_str}', resetting to None")
-                normalized['last_capture'] = None
+                self.logger.warning(
+                    f"Invalid last_planned timestamp '{last_planned_str}', resetting to None"
+                )
+                normalized['last_planned'] = None
 
-        candidate_time = max(now, window_start)
-        if last_capture_dt:
-            candidate_time = max(candidate_time, last_capture_dt + interval_td)
+        # Planned reference: next slot after last_planned, or first slot in window
+        planned_ref = (last_planned_dt + interval_td) if last_planned_dt else window_start
 
-        next_capture = self._align_to_interval(window_start, candidate_time, interval_td)
+        # Ensure planned_ref is not before the window start for alignment
+        planned_ref = max(planned_ref, window_start)
+
+        next_capture = self._align_to_interval(window_start, planned_ref, interval_td)
+
+        # If aligned next_capture falls outside the window, advance to the next window
         if next_capture is None or next_capture > window_end:
             window_start, window_end = self._advance_window(window_start, window_end)
             normalized['window_start'] = window_start.isoformat()
             normalized['window_end'] = window_end.isoformat()
+            # First slot in next window
             next_capture = window_start
             capture_due = False
         else:
+            # Due if we've passed the planned capture time within the window
             capture_due = window_start <= next_capture <= window_end and now >= next_capture
 
         normalized['next_capture'] = next_capture.isoformat()
@@ -933,11 +1004,11 @@ class BMTLCameraDaemon:
                 if schedule:
                     self.check_and_execute_schedule(schedule)
 
-                time.sleep(60)  # Check every minute
+                time.sleep(23)  # Check every 23s
 
             except Exception as e:
                 self.logger.error(f"Error in scheduled tasks: {e}")
-                time.sleep(60)
+                time.sleep(23)
 
     def check_and_execute_schedule(self, schedule, current_time=None):
         """Evaluate the schedule and trigger captures when due."""
@@ -957,12 +1028,57 @@ class BMTLCameraDaemon:
             schedule_changed = working_schedule != original_schedule
 
             if capture_due:
-                result, capture_time = self.execute_scheduled_capture(planned_time=now)
-                working_schedule['last_capture'] = capture_time.isoformat()
+                # Determine drift vs grid capture and enforce grid policy
+                interval_min = working_schedule.get('capture_interval', working_schedule.get('interval_minutes', 0))
+                try:
+                    interval_min = int(interval_min)
+                except Exception:
+                    interval_min = 0
+                interval_td = timedelta(minutes=interval_min)
 
-                post_state, _ = self._normalize_schedule_state(working_schedule, capture_time)
-                working_schedule.update(post_state)
-                schedule_changed = True
+                # Parse planned slot time
+                planned_str = working_schedule.get('next_capture')
+                try:
+                    planned_time = datetime.fromisoformat(planned_str) if planned_str else now
+                except Exception:
+                    planned_time = now
+
+                # If more than one grid has already passed, fast-forward without drift capture
+                if interval_td.total_seconds() > 0 and now >= (planned_time + interval_td):
+                    # Fast-forward last_planned to the most recent grid <= now
+                    try:
+                        window_start = datetime.fromisoformat(working_schedule.get('window_start'))
+                        window_end = datetime.fromisoformat(working_schedule.get('window_end'))
+                    except Exception:
+                        # Fallback: recompute window from now
+                        ws, we, _ = self._calculate_window(now,
+                                                           working_schedule.get('start_time', '00:00'),
+                                                           working_schedule.get('end_time', '23:59'))
+                        window_start, window_end = ws, we
+
+                    floor_slot = self._floor_to_interval(window_start, now, interval_td)
+                    # Keep within window bounds
+                    if floor_slot > window_end:
+                        floor_slot = window_end
+                    working_schedule['last_planned'] = floor_slot.isoformat()
+
+                    # Recompute state after fast-forward
+                    post_state, _ = self._normalize_schedule_state(working_schedule, now)
+                    working_schedule.update(post_state)
+                    schedule_changed = True
+                else:
+                    # Capture (grid or slight drift) with filename fixed to planned slot timestamp
+                    result, _ = self.execute_scheduled_capture(planned_time=planned_time)
+                    # Record planned slot and actual capture time separately
+                    working_schedule['last_planned'] = planned_time.isoformat()
+                    try:
+                        working_schedule['last_capture'] = datetime.now().isoformat()
+                    except Exception:
+                        working_schedule['last_capture'] = now.isoformat()
+
+                    post_state, _ = self._normalize_schedule_state(working_schedule, capture_time)
+                    working_schedule.update(post_state)
+                    schedule_changed = True
 
             self.current_schedule = working_schedule
 
@@ -989,9 +1105,10 @@ class BMTLCameraDaemon:
         """Execute a scheduled capture and persist the result."""
         capture_time = planned_time or datetime.now()
         try:
-            result = self.camera.capture_photo()
+            filename = self.camera.build_slot_filename(capture_time)
+            result = self.camera.capture_photo(filename)
             config_manager.write_config('camera_result.json', result)
-            self.logger.info(f"Scheduled capture completed: {result}")
+            self.logger.info(f"Scheduled capture completed (planned={capture_time.isoformat()}): {result}")
             return result, capture_time
 
         except Exception as e:
